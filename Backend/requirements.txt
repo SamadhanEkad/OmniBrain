@@ -1,0 +1,11 @@
+
+fastapi
+uvicorn[standard]
+python-multipart
+PyMuPDF>=1.24.0
+
+langchain-text-splitters
+tiktoken
+
+requests>=2.31.0
+qdrant-client>=1.9.0

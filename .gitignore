@@ -1,0 +1,27 @@
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Private and generated PDF data
+Backend/Data/raw/
+Backend/Data/processed/
+
+# Frontend dependencies and build output
+Frontend/node_modules/
+Frontend/dist/
+
+# Editor and operating system files
+.vscode/
+.DS_Store
+Thumbs.db
