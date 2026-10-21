@@ -10,76 +10,83 @@ Responsibilities:
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import pymupdf
 
+logger = logging.getLogger(__name__)
+
 # Backend directory: OmniBrain/Backend/
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
-# Default Location for extracted text
+# Default location for extracted text
 PROCESSED_DIR = BACKEND_DIR / "Data" / "processed"
 
+
 def extract_pdf_text(
-        pdf_path: str | Path,
-        document_id: str | None = None,
-        output_dir: str | Path | None = None,
-) -> dict[str,any]:
+    pdf_path: str | Path,
+    document_id: str | None = None,
+    output_dir: str | Path | None = None,
+) -> dict[str, Any]:
     """
-    Extract text from a PDF and save the result as JSON.
+    Extract embedded PDF text page by page and save it as JSON.
 
-    Args:
-        pdf_path: Path to the original PDF.
-        document_id: Existing document ID; defaults to the PDF filename.
-        output_dir: Optional output directory for the JSON file.
-
-    Returns:
-        Dictionary containing document metadata, extracted pages,
-        and the path of the generated JSON file.
-
-    Raises:
-        FileNotFoundError: If the PDF does not exist.
-        ValueError: If the file is not a PDF or contains no extractable text.
-        RuntimeError: If PyMuPDF cannot read the PDF.
+    Note:
+        This function does not perform OCR or visual chart/table analysis.
     """
     source_path = Path(pdf_path).expanduser().resolve()
 
-    # Validate the input file.
+    # 1. Validate the source file.
     if not source_path.is_file():
-        raise FileNotFoundError(
-            f"PDF file not found: {source_path}"
-        )
+        raise FileNotFoundError(f"PDF file not found: {source_path}")
 
     if source_path.suffix.lower() != ".pdf":
         raise ValueError("The input file must have a .pdf extension.")
 
-    # Preserve the document ID generated during step 2
+    # 2. Validate the document ID.
     doc_id = document_id or source_path.stem
 
-    # Prevent document Ids from creating paths outside the output folder.
-    if(
-        not doc_id
+    if (
+        not isinstance(doc_id, str)
+        or not doc_id.strip()
         or Path(doc_id).name != doc_id
-        or doc_id in {".",".."}
+        or doc_id in {".", ".."}
         or "/" in doc_id
         or "\\" in doc_id
     ):
         raise ValueError("Invalid document ID.")
 
+    # 3. Resolve the output directory.
     destination_dir = (
         Path(output_dir).expanduser().resolve()
         if output_dir is not None
-        else PROCESSED_DIR  
+        else PROCESSED_DIR
     )
 
-    pages = []
+    pages: list[dict[str, Any]] = []
+    pdf_metadata: dict[str, Any] = {}
 
+    # 4. Extract text while preserving page numbers.
     try:
         with pymupdf.open(source_path) as pdf:
+            if pdf.is_encrypted:
+                raise ValueError(
+                    "This PDF is encrypted and cannot be processed "
+                    "without a valid password."
+                )
+
+            if len(pdf) == 0:
+                raise ValueError("The PDF contains no pages.")
+
+            raw_meta = pdf.metadata or {}
+            for k, v in raw_meta.items():
+                if isinstance(v, str) and v.strip():
+                    pdf_metadata[k] = v.strip()
+
             for page_number, page in enumerate(pdf, start=1):
-                # Extract text while preserving the page association.
-                text = page.get_text("text").strip()
+                text = page.get_text("text", sort=True).strip()
 
                 pages.append(
                     {
@@ -88,51 +95,64 @@ def extract_pdf_text(
                     }
                 )
 
+    except ValueError:
+        raise
     except Exception as exc:
+        logger.exception(
+            "Failed to extract text from %s",
+            source_path.name,
+        )
         raise RuntimeError(
-            f"Failed to extarct text from {source_path.name}: {exc}"
+            f"Failed to extract text from {source_path.name}: {exc}"
         ) from exc
 
-    #  Detect scanned PDFs or documents with no embedded text.
+    # 5. Detect documents with no embedded text.
     if not any(page["text"] for page in pages):
         raise ValueError(
             "No extractable text was found. "
             "This PDF may be scanned and require OCR."
         )
 
-    # Build the structured extraction result
-    result = {
+    # 6. Build the extraction result.
+    result: dict[str, Any] = {
         "document_id": doc_id,
         "source_file": source_path.name,
         "page_count": len(pages),
+        "pdf_metadata": pdf_metadata,
         "pages": pages,
     }
 
-    # Create the processed directory when it does not exit.
+    # 7. Save JSON safely.
     destination_dir.mkdir(parents=True, exist_ok=True)
 
     output_path = destination_dir / f"{doc_id}.json"
     temporary_path = destination_dir / f".{doc_id}.json.tmp"
 
     try:
-        # Write to a temporary file before replacing the final output
         with temporary_path.open("w", encoding="utf-8") as file:
             json.dump(
                 result,
                 file,
                 ensure_ascii=False,
-                indent = 2,
+                indent=2,
             )
+            file.write("\n")
 
         temporary_path.replace(output_path)
 
+    except Exception:
+        logger.exception(
+            "Failed to save extracted JSON for document %s",
+            doc_id,
+        )
+        raise
+
     finally:
-        # Remove on incomplete temporary file if writing fails.
         if temporary_path.exists():
             temporary_path.unlink()
 
-    # Return the result and the saved JSON Location.
-    return{
+    # 8. Return the data and output path.
+    return {
         **result,
         "output_json": str(output_path),
     }

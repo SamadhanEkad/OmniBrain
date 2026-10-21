@@ -1,11 +1,10 @@
-
 import pymupdf
 import pytest
 from fastapi import HTTPException, UploadFile
 from io import BytesIO
 from unittest.mock import patch
 
-from Backend.app.services.file_service import save_pdf
+from app.services.file_service import load_document_info, save_pdf
 
 
 def create_test_pdf():
@@ -22,11 +21,11 @@ async def test_valid_pdf_is_saved(tmp_path):
 
     with (
         patch(
-            "Backend.app.services.file_service.RAW_DATA_DIR",
+            "app.services.file_service.RAW_DATA_DIR",
             tmp_path
         ),
         patch(
-            "Backend.app.services.file_service.MAX_UPLOAD_SIZE_BYTES",
+            "app.services.file_service.MAX_UPLOAD_SIZE_BYTES",
             20 * 1024 * 1024
         ),
     ):
@@ -43,6 +42,19 @@ async def test_valid_pdf_is_saved(tmp_path):
         assert result["status"] == "uploaded"
         assert result["page_count"] == 1
         assert saved_file.read_bytes() == pdf_content
+        assert load_document_info(result["document_id"]) == {
+            "document_id": result["document_id"],
+            "filename": "sample.pdf",
+            "page_count": 1,
+            "metadata_status": "pending",
+            "processing_status": {
+                "metadata": {"status": "pending"},
+                "extraction": {"status": "pending"},
+                "chunking": {"status": "pending"},
+                "embedding": {"status": "pending"},
+                "indexing": {"status": "pending"},
+            },
+        }
 
 
 @pytest.mark.asyncio
