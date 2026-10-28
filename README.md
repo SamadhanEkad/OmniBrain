@@ -262,3 +262,28 @@ Potential future improvements, not currently implemented, include OCR for scanne
 ## Author and license
 
 The GitHub repository is owned by [SamadhanEkad](https://github.com/SamadhanEkad). No license file is present in the repository, so the project's license terms are not specified here.
+
+## Application URLs
+
+### Frontend
+
+- **URL:** [http://localhost:5173](http://localhost:5173/)
+- **Purpose:** Open the OmniBrain web application to upload PDF documents and ask questions.
+
+### Backend
+
+- **URL:** [http://127.0.0.1:8000](http://127.0.0.1:8000/)
+- **Purpose:** FastAPI backend that handles document uploads, document processing, information retrieval, and answer generation.
+
+### Backend API Documentation
+
+- **Swagger UI:** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- **ReDoc:** [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
+- **Purpose:** Explore and test the available backend API endpoints.
+
+### Important Notes
+
+1. These URLs are for local development.
+2. Start the backend and frontend servers before opening the application.
+3. The frontend uses Vite's default port `5173`, and the backend is configured for port `8000`. Check the server output if the configured ports differ.
+4. The project is not documented as publicly deployed.
