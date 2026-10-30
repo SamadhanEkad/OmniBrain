@@ -13,6 +13,22 @@ from app.services import file_service
 from app.services.text_chunker import chunk_extracted_json
 
 
+def test_cors_allows_deployed_frontend_origin():
+    response = TestClient(app).options(
+        "/api/documents/upload",
+        headers={
+            "Origin": "https://omnibrain-frontend-be3o.onrender.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == (
+        "https://omnibrain-frontend-be3o.onrender.com"
+    )
+
+
 def test_answer_prompt_uses_the_supplied_evidence_and_question():
     prompt = build_prompt(
         "How does the document describe the project?",

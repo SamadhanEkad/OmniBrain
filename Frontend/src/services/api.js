@@ -1,11 +1,14 @@
-const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim() || "";
+const configuredApiBaseUrl =
+  import.meta.env.VITE_API_URL?.trim() ||
+  import.meta.env.VITE_API_BASE_URL?.trim() ||
+  "";
 const isProductionBuild = import.meta.env.MODE === "production";
 const isLoopbackUrl = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(
   configuredApiBaseUrl,
 );
 const apiConfigurationError =
   isProductionBuild && (!configuredApiBaseUrl || isLoopbackUrl)
-    ? "Set VITE_API_BASE_URL to the deployed backend URL. Production builds cannot use a localhost API."
+    ? "Set VITE_API_URL to the deployed backend URL. Production builds cannot use a localhost API."
     : null;
 const API_BASE_URL = (
   configuredApiBaseUrl ||

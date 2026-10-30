@@ -31,6 +31,7 @@ DEFAULT_CORS_ORIGINS = (
     "http://localhost:3000,"
     "http://127.0.0.1:3000"
 )
+DEPLOYED_FRONTEND_ORIGIN = "https://omnibrain-frontend-be3o.onrender.com"
 
 CORS_ORIGINS = [
     origin.strip()
@@ -40,6 +41,8 @@ CORS_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+if DEPLOYED_FRONTEND_ORIGIN not in CORS_ORIGINS:
+    CORS_ORIGINS.append(DEPLOYED_FRONTEND_ORIGIN)
 
 
 # --------------------------------------------------

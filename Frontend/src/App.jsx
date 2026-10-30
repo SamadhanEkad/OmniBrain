@@ -686,7 +686,7 @@ function SettingsView({ onRefreshHealth }) {
         </div>
 
         <p className="settings-note">
-          <Info size={15} /> Set <code>VITE_API_BASE_URL</code> in the frontend
+          <Info size={15} /> Set <code>VITE_API_URL</code> in the frontend
           environment. For production, use the deployed backend URL rather than
           a localhost address.
         </p>

@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App.jsx";
+import { api } from "../src/services/api.js";
 
 function jsonResponse(body, status = 200) {
   return {
@@ -104,7 +105,16 @@ The equation is $E=mc^2$.
     expect(renderedAnswer?.querySelector("table")).not.toBeNull();
     expect(renderedAnswer?.querySelector(".katex")).not.toBeNull();
     expect(renderedAnswer?.querySelector("script")).toBeNull();
-    expect(fetchMock.mock.calls.some(([url]) => new URL(url).pathname === "/api/documents/doc-alpha/answer")).toBe(true);
+    const requestUrls = fetchMock.mock.calls.map(([url]) => new URL(url));
+    const apiOrigin = new URL(api.baseUrl).origin;
+    expect(requestUrls.every((url) => url.origin === apiOrigin)).toBe(true);
+    expect(requestUrls.map((url) => url.pathname)).toEqual(
+      expect.arrayContaining([
+        "/health",
+        "/api/documents/upload",
+        "/api/documents/doc-alpha/answer",
+      ]),
+    );
   });
 
   it("keeps a late response from a previous conversation from replacing the selected document's answer", async () => {

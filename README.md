@@ -196,7 +196,7 @@ npm ci
 npm run dev
 ```
 
-The frontend uses `VITE_API_BASE_URL` to select the backend address; it defaults to `http://127.0.0.1:8000`. Set that variable before starting Vite only if the backend is at a different address.
+The frontend uses `VITE_API_URL` to select the backend address; it defaults to `http://127.0.0.1:8000`. Set that variable before starting Vite only if the backend is at a different address. `VITE_API_BASE_URL` remains supported as a legacy alias.
 
 ### 6. Open OmniBrain
 
@@ -243,9 +243,9 @@ The question must contain 1–2000 characters. Each source may include `document
 | `CORS_ORIGINS` | Comma-separated allowed frontend origins | Localhost origins, including Vite's default port |
 | `LOG_LEVEL` | Backend log level | `INFO` |
 | `PORT` | HTTP port for the backend | Supplied by Render; do not hardcode it |
-| `VITE_API_BASE_URL` | Backend base URL used by the frontend | Local development defaults to `http://127.0.0.1:8000`; required for production builds |
+| `VITE_API_URL` | Backend base URL used by the frontend | Local development defaults to `http://127.0.0.1:8000`; required for production builds |
 
-Backend variables are read from the process environment and `Backend/.env` when present. The frontend reads `VITE_API_BASE_URL` from its Vite environment; `Frontend/.env.example` shows the local default. Production frontend code rejects a missing or loopback API URL. Never put credentials in source control or any `VITE_*` variable.
+Backend variables are read from the process environment and `Backend/.env` when present. The frontend reads `VITE_API_URL` from its Vite environment, with `VITE_API_BASE_URL` retained as a legacy alias; `Frontend/.env.example` shows the local default. Production frontend code rejects a missing or loopback API URL. Never put credentials in source control or any `VITE_*` variable.
 
 ## Render deployment
 
@@ -292,9 +292,9 @@ Only files under the mount are durable. Without it, PDFs and local processing da
 | Root Directory | `Frontend` |
 | Build Command | `npm ci && npm run build` |
 | Publish Directory | `dist` |
-| Environment Variable | `VITE_API_BASE_URL=https://<your-backend-service>.onrender.com` |
+| Environment Variable | `VITE_API_URL=https://<your-backend-service>.onrender.com` |
 
-Create the backend and frontend services first, then replace the placeholder with the actual backend URL and set `CORS_ORIGINS` on the backend to the actual frontend origin, for example `https://<your-frontend-site>.onrender.com`. These are placeholders, not deployed service URLs. Local Vite origins remain allowed for development; production CORS is restricted to the configured origins.
+Create the backend and frontend services first, then replace the placeholder with the actual backend URL and set `CORS_ORIGINS` on the backend to the actual frontend origin, for example `https://<your-frontend-site>.onrender.com`. These are placeholders, not deployed service URLs. Local Vite origins remain allowed for development; production CORS allows the deployed OmniBrain frontend and any additionally configured origins.
 
 ### Operational and privacy limitations
 
@@ -317,7 +317,7 @@ Create the backend and frontend services first, then replace the placeholder wit
 
 - **Backend does not start:** Confirm Python 3.12 is selected, activate the virtual environment, and install `Backend/requirements.txt`.
 - **Frontend dependencies are missing:** Run `npm ci` from `Frontend/`, then start it with `npm run dev`.
-- **Frontend cannot reach the backend:** Start the backend on port 8000, check that `VITE_API_BASE_URL` points to it, and restart Vite after changing its environment. The backend allows local development origins by default.
+- **Frontend cannot reach the backend:** Start the backend on port 8000, check that `VITE_API_URL` points to it, and restart Vite after changing its environment. The backend allows local development origins by default.
 - **Question answering fails:** Check `GEMINI_API_KEY` and `GEMINI_MODEL`, and verify that the configured Gemini model is available to the API key.
 - **Embedding or indexing fails:** Make sure the configured Ollama service is reachable and `nomic-embed-text-v2-moe` is installed. Check that `PINECONE_API_KEY` is valid and the index dimension matches `VECTOR_SIZE` (768 by default).
 - **PDF upload or extraction fails:** Check that the file is a valid, unencrypted PDF under 20 MiB and contains selectable text. Scanned PDFs need OCR, which is not currently provided.
