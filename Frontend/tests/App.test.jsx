@@ -117,6 +117,20 @@ The equation is $E=mc^2$.
     );
   });
 
+  it("shows the health-check error when the backend cannot be reached", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new TypeError("Failed to fetch")),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Offline · recheck" })).toBeTruthy();
+    const healthError = await screen.findByRole("alert");
+    expect(healthError.textContent).toContain("Could not reach OmniBrain at");
+    expect(healthError.textContent).toContain("CORS settings");
+  });
+
   it("keeps a late response from a previous conversation from replacing the selected document's answer", async () => {
     const user = userEvent.setup();
     let releaseFirstAnswer;

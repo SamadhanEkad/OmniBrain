@@ -707,6 +707,7 @@ export default function App() {
   const workspaceRef = useRef(workspace);
   const [activeView, setActiveView] = useState("chat");
   const [backendStatus, setBackendStatus] = useState("checking");
+  const [backendError, setBackendError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isAnswering, setIsAnswering] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
@@ -775,12 +776,26 @@ export default function App() {
       .then((result) => {
         const status = result?.status === "healthy" ? "online" : "offline";
 
-        if (mounted.current) setBackendStatus(status);
+        if (mounted.current) {
+          setBackendStatus(status);
+          setBackendError(
+            status === "online"
+              ? ""
+              : "Health check returned an unexpected response. Check the backend /health endpoint.",
+          );
+        }
 
         return status;
       })
-      .catch(() => {
-        if (mounted.current) setBackendStatus("offline");
+      .catch((error) => {
+        if (mounted.current) {
+          setBackendStatus("offline");
+          setBackendError(
+            error instanceof Error
+              ? error.message
+              : "The health check failed. Try again.",
+          );
+        }
 
         return "offline";
       })
@@ -795,7 +810,10 @@ export default function App() {
     mounted.current = true;
 
     const markOffline = () => setBackendStatus("offline");
-    const markOnline = () => setBackendStatus("online");
+    const markOnline = () => {
+      setBackendStatus("online");
+      setBackendError("");
+    };
 
     window.addEventListener("omnibrain:backend-unavailable", markOffline);
     window.addEventListener("omnibrain:backend-reachable", markOnline);
@@ -1525,14 +1543,14 @@ export default function App() {
         </footer>
       </div>
 
-      {(notice || storageError) && (
+      {(notice || storageError || backendError) && (
         <div
-          className={`toast ${storageError ? "toast--error" : ""}`}
-          role="status"
-          aria-live="polite"
+          className={`toast ${storageError || backendError ? "toast--error" : ""}`}
+          role={storageError || backendError ? "alert" : "status"}
+          aria-live={storageError || backendError ? "assertive" : "polite"}
         >
           <Info size={15} />
-          <span>{storageError || notice}</span>
+          <span>{storageError || backendError || notice}</span>
 
           {storageError && (
             <button
