@@ -1,5 +1,15 @@
+const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim() || "";
+const isProductionBuild = import.meta.env.MODE === "production";
+const isLoopbackUrl = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(
+  configuredApiBaseUrl,
+);
+const apiConfigurationError =
+  isProductionBuild && (!configuredApiBaseUrl || isLoopbackUrl)
+    ? "Set VITE_API_BASE_URL to the deployed backend URL. Production builds cannot use a localhost API."
+    : null;
 const API_BASE_URL = (
-  import.meta.env?.VITE_API_BASE_URL || "http://127.0.0.1:8000"
+  configuredApiBaseUrl ||
+  (isProductionBuild ? "" : "http://127.0.0.1:8000")
 ).replace(/\/+$/, "");
 
 const BACKEND_UNAVAILABLE_EVENT = "omnibrain:backend-unavailable";
@@ -92,6 +102,10 @@ async function request(
   timeoutMs = DEFAULT_REQUEST_TIMEOUT,
   interruptionMessages = {},
 ) {
+  if (apiConfigurationError) {
+    throw new ApiError(apiConfigurationError, null, "API_CONFIG_ERROR");
+  }
+
   const controller = new AbortController();
 
   let timedOut = false;
@@ -169,7 +183,7 @@ async function request(
 // --------------------------------------------------
 
 export const api = {
-  baseUrl: API_BASE_URL,
+  baseUrl: API_BASE_URL || "Not configured",
 
   // Check whether the FastAPI backend is responding.
   checkHealth() {

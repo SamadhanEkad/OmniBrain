@@ -10,14 +10,18 @@ import pymupdf
 import requests
 from dotenv import load_dotenv
 
-from app.config import GEMINI_API_KEY, GEMINI_MODEL
+from app.config import (
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
+    OLLAMA_LLM_MODEL,
+    OLLAMA_URL,
+)
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/") + "/api/generate"
-OLLAMA_LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "llama3.2:1b")
+OLLAMA_GENERATE_URL = f"{OLLAMA_URL}/api/generate"
 
 # Metadata generation limits
 METADATA_MAX_PAGES = 12
@@ -289,7 +293,7 @@ def _request_metadata_ollama(
     """Fallback metadata generation via Ollama if available."""
     try:
         response = requests.post(
-            OLLAMA_URL,
+            OLLAMA_GENERATE_URL,
             json={
                 "model": OLLAMA_LLM_MODEL,
                 "prompt": prompt,

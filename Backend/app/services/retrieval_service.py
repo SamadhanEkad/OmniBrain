@@ -2,17 +2,19 @@ import argparse
 import json
 import logging
 import math
-import os
 import time
-from pathlib import Path
 
 import requests
-from dotenv import load_dotenv
 from pinecone import Pinecone
 
-BACKEND_DIR = Path(__file__).resolve().parents[2]
-load_dotenv(BACKEND_DIR / ".env")
-load_dotenv()
+from app.config import (
+    EMBEDDING_MODEL,
+    OLLAMA_URL,
+    PINECONE_API_KEY,
+    PINECONE_INDEX_NAME,
+    PROCESSED_DATA_DIR,
+    VECTOR_SIZE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,26 +22,8 @@ logger = logging.getLogger(__name__)
 # 1. Configuration
 # --------------------------------------------------
 
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-
-INDEX_NAME = os.getenv(
-    "PINECONE_INDEX_NAME",
-    "omnibrain-documents",
-)
+INDEX_NAME = PINECONE_INDEX_NAME
 COLLECTION_NAME = INDEX_NAME
-
-OLLAMA_URL = os.getenv(
-    "OLLAMA_URL",
-    "http://localhost:11434",
-).rstrip("/")
-
-EMBEDDING_MODEL = os.getenv(
-    "EMBEDDING_MODEL",
-    "nomic-embed-text-v2-moe",
-)
-
-# Must match the embedding dimensions and Pinecone index.
-VECTOR_SIZE = int(os.getenv("VECTOR_SIZE", "768"))
 
 DEFAULT_TOP_K = 3
 MAX_TOP_K = 20
@@ -154,7 +138,7 @@ def get_pinecone_client() -> Pinecone:
 
     Does not create, delete, or re-index the collection.
     """
-    api_key = os.getenv("PINECONE_API_KEY")
+    api_key = PINECONE_API_KEY
     if not api_key or not api_key.strip():
         raise RuntimeError(
             "PINECONE_API_KEY environment variable is not set. "
@@ -225,7 +209,7 @@ def load_all_document_chunks(document_id: str) -> list[dict]:
     if not isinstance(document_id, str) or not document_id.strip():
         return []
 
-    chunks_file = BACKEND_DIR / "Data" / "processed" / f"{document_id.strip()}_chunks.json"
+    chunks_file = PROCESSED_DATA_DIR / f"{document_id.strip()}_chunks.json"
     if not chunks_file.is_file():
         return []
 

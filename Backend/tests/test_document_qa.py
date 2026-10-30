@@ -104,6 +104,27 @@ def test_answer_question_endpoint_reports_vector_db_unavailable(monkeypatch):
     assert "Pinecone is not reachable." in response.json()["detail"]
 
 
+def test_delete_document_endpoint_also_removes_vectors(monkeypatch):
+    document_id = "123e4567-e89b-12d3-a456-426614174000"
+    remove = Mock(
+        return_value={
+            "document_id": document_id,
+            "deleted": True,
+            "vectors_deleted": 4,
+        }
+    )
+    monkeypatch.setattr("app.api.upload.remove_document", remove)
+
+    response = TestClient(app).delete(f"/api/documents/{document_id}")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "document_id": document_id,
+        "deleted": True,
+    }
+    remove.assert_called_once_with(document_id)
+
+
 def test_document_is_indexed_once_and_existing_index_is_reused(
     monkeypatch,
     tmp_path,
@@ -142,7 +163,7 @@ def test_document_is_indexed_once_and_existing_index_is_reused(
     document_qa_service.ensure_document_indexed(document_id)
 
     extract.assert_called_once()
-    chunk.assert_called_once_with("extracted.json")
+    chunk.assert_called_once_with("extracted.json", filename=None)
     embed.assert_called_once_with(document_id)
     ensure.assert_called_once_with(client, 768)
     store.assert_called_once()
@@ -151,6 +172,10 @@ def test_document_is_indexed_once_and_existing_index_is_reused(
     client.reset_mock()
     index_mock.reset_mock()
     client.list_indexes.return_value = [SimpleNamespace(name="omnibrain-documents")]
+    client.describe_index.return_value = SimpleNamespace(
+        dimension=768,
+        metric="cosine",
+    )
     index_mock.query.return_value = SimpleNamespace(matches=[SimpleNamespace(id="match-1")])
     extract.reset_mock()
 
@@ -194,7 +219,15 @@ def test_answer_document_question_returns_retrieved_citations(monkeypatch):
         question="When did the project begin?",
         retrieved_chunks=chunks,
     )
-    assert result == {"answer": "The project began in 2024.", "sources": chunks}
+    assert result == {
+        "answer": "The project began in 2024.",
+        "sources": [
+            {
+                **chunks[0],
+                "filename": None,
+            }
+        ],
+    }
 
 
 def test_filename_and_page_count_questions_use_saved_upload_information(
@@ -461,4 +494,3 @@ def test_comparison_routes_to_generator(monkeypatch, tmp_path):
 
     assert "| Feature |" in result["answer"]
     generate.assert_called_once()
-

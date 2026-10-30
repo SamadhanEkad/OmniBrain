@@ -677,7 +677,7 @@ function SettingsView({ onRefreshHealth }) {
 
         <div className="settings-field">
           <span>Question answering</span>
-          <code>POST /api/documents/ask</code>
+          <code>POST /api/documents/&#123;document_id&#125;/answer</code>
         </div>
 
         <div className="settings-field">
@@ -686,9 +686,9 @@ function SettingsView({ onRefreshHealth }) {
         </div>
 
         <p className="settings-note">
-          <Info size={15} /> Change the endpoint with{" "}
-          <code>VITE_API_BASE_URL</code> in your local <code>.env</code> file,
-          then restart Vite.
+          <Info size={15} /> Set <code>VITE_API_BASE_URL</code> in the frontend
+          environment. For production, use the deployed backend URL rather than
+          a localhost address.
         </p>
       </section>
 

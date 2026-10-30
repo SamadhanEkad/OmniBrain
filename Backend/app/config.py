@@ -60,18 +60,20 @@ PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "omnibrain-documents")
 PINECONE_CLOUD = os.getenv("PINECONE_CLOUD", "aws")
 PINECONE_REGION = os.getenv("PINECONE_REGION", "us-east-1")
 
-# All chunks from all PDFs live in one namespace.
-# Each chunk's metadata holds doc_id, filename and page,
-# and retrieval filters on doc_id to pick the right PDF.
-PINECONE_NAMESPACE = os.getenv("PINECONE_NAMESPACE", "default")
-
-# Number of chunks fetched per question.
-RETRIEVAL_TOP_K = int(
-    os.getenv(
-        "RETRIEVAL_TOP_K",
-        "6",
-    )
+# Ollama configuration shared by document and query embedding.
+OLLAMA_URL = os.getenv(
+    "OLLAMA_URL",
+    "http://localhost:11434",
+).rstrip("/")
+EMBEDDING_MODEL = os.getenv(
+    "EMBEDDING_MODEL",
+    "nomic-embed-text-v2-moe",
 )
+VECTOR_SIZE = int(os.getenv("VECTOR_SIZE", "768"))
+OLLAMA_LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "llama3.2:1b")
+
+if VECTOR_SIZE <= 0:
+    raise ValueError("VECTOR_SIZE must be a positive integer.")
 
 
 # --------------------------------------------------
@@ -79,7 +81,7 @@ RETRIEVAL_TOP_K = int(
 # --------------------------------------------------
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
 
 # --------------------------------------------------

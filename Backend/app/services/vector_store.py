@@ -9,6 +9,8 @@ from uuid import NAMESPACE_URL, uuid5
 from dotenv import load_dotenv
 from pinecone import Pinecone, ServerlessSpec
 
+from app.config import EMBEDDING_MODEL, PINECONE_INDEX_NAME
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -22,13 +24,10 @@ PROCESSED_DIR = PROJECT_ROOT / "Data" / "processed"
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 
-INDEX_NAME = os.getenv(
-    "PINECONE_INDEX_NAME",
-    "omnibrain-documents",
-)
+INDEX_NAME = PINECONE_INDEX_NAME
 COLLECTION_NAME = INDEX_NAME
 
-DEFAULT_EMBEDDING_MODEL = "nomic-embed-text-v2-moe"
+DEFAULT_EMBEDDING_MODEL = EMBEDDING_MODEL
 DEFAULT_CLOUD = os.getenv("PINECONE_CLOUD", "aws")
 DEFAULT_REGION = os.getenv("PINECONE_REGION", "us-east-1")
 

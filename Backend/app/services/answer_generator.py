@@ -1,21 +1,16 @@
 import argparse
 import logging
-import os
 import time
 
-from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError, ClientError, ServerError
 
-from app.config import BACKEND_ROOT, GEMINI_API_KEY, GEMINI_MODEL
+from app.config import GEMINI_API_KEY, GEMINI_MODEL
 from app.services.retrieval_service import (
     DEFAULT_TOP_K,
     search_documents,
 )
-
-load_dotenv(BACKEND_ROOT / ".env")
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +18,7 @@ logger = logging.getLogger(__name__)
 # 1. Configuration
 # --------------------------------------------------
 
-DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+DEFAULT_GEMINI_MODEL = GEMINI_MODEL
 
 MAX_CONTEXT_CHARS = 24000
 # Larger budget used when several PDFs contribute excerpts.
@@ -40,7 +35,7 @@ TEMPERATURE = 0.2
 
 def get_gemini_client() -> genai.Client:
     """Connect to Google GenAI client using the configured API key."""
-    api_key = os.getenv("GEMINI_API_KEY") or GEMINI_API_KEY
+    api_key = GEMINI_API_KEY
     if not api_key or not api_key.strip():
         raise RuntimeError(
             "GEMINI_API_KEY environment variable is not set. "
@@ -330,7 +325,7 @@ def generate_answer(
         file_names=file_names,
     )
 
-    target_model = (model or os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)).strip()
+    target_model = (model or DEFAULT_GEMINI_MODEL).strip()
     client = get_gemini_client()
 
     logger.info(

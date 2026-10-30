@@ -14,22 +14,27 @@ function jsonResponse(body, status = 200) {
 
 function uploadResult(documentId, filename) {
   return {
-    document_id: documentId,
-    filename,
-    status: "uploaded",
-    page_count: 2,
-    size_bytes: 42,
+    uploaded: [
+      {
+        document_id: documentId,
+        filename,
+        status: "uploaded",
+        page_count: 2,
+        size_bytes: 42,
+      },
+    ],
+    failed: [],
   };
 }
 
 async function uploadPdf(user, filename = "notes.pdf") {
-  const picker = screen.getByLabelText("Choose a PDF document");
+  const picker = screen.getByLabelText("Choose PDF documents");
   await user.upload(picker, new File(["pdf"], filename, { type: "application/pdf" }));
   await user.click(screen.getByRole("button", { name: "Upload PDF" }));
 }
 
 async function ask(user, question) {
-  const input = screen.getByLabelText("Ask about your document");
+  const input = screen.getByLabelText("Ask about your documents");
   await user.type(input, question);
   await user.keyboard("{Enter}");
 }
@@ -204,7 +209,7 @@ The equation is $E=mc^2$.
     await uploadPdf(user, "expected.pdf");
     await ask(user, "What is in the selected PDF?");
 
-    expect(await screen.findByText(/passages from a different document/)).toBeTruthy();
+    expect(await screen.findByText(/passages from a PDF outside this search/)).toBeTruthy();
     expect(screen.queryByText("This answer belongs to another document.")).toBeNull();
   });
 });

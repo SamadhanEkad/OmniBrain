@@ -7,19 +7,26 @@ from typing import Any
 
 import ollama
 
+from app.config import (
+    EMBEDDING_MODEL,
+    OLLAMA_URL,
+    PROCESSED_DATA_DIR,
+    VECTOR_SIZE,
+)
 
 # --------------------------------------------------
 # 1. Configuration
 # --------------------------------------------------
 
-MODEL_NAME = "nomic-embed-text-v2-moe"
+MODEL_NAME = EMBEDDING_MODEL
+OLLAMA_CLIENT = ollama.Client(host=OLLAMA_URL, timeout=120)
 
 # Nomic model input limit is 512 tokens.
 # Keep a safety margin because our tokenizer is approximate.
 SAFE_TOKEN_LIMIT = 480
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
-PROCESSED_DIR = BACKEND_DIR / "Data" / "processed"
+PROCESSED_DIR = PROCESSED_DATA_DIR
 
 # Metadata fields that should survive embedding and indexing.
 METADATA_FIELDS = (
@@ -158,7 +165,7 @@ def generate_embeddings(
 
         # Request an embedding from Ollama.
         try:
-            response = ollama.embed(
+            response = OLLAMA_CLIENT.embed(
                 model=MODEL_NAME,
                 input=embedding_input,
             )
@@ -178,6 +185,12 @@ def generate_embeddings(
             )
 
         vector = vectors[0]
+
+        if len(vector) != VECTOR_SIZE:
+            raise ValueError(
+                f"Expected {VECTOR_SIZE} embedding dimensions for "
+                f"chunk {chunk_id}, but Ollama returned {len(vector)}."
+            )
 
         # Validate numerical values.
         if not all(
