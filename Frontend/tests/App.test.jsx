@@ -136,7 +136,8 @@ The equation is $E=mc^2$.
     expect(await screen.findByRole("button", { name: "Offline · recheck" })).toBeTruthy();
     const healthError = await screen.findByRole("alert");
     expect(healthError.textContent).toContain("Could not reach OmniBrain at");
-    expect(healthError.textContent).toContain("CORS settings");
+    expect(healthError.textContent).toContain(window.location.origin);
+    expect(healthError.textContent).toContain("CORS_ORIGINS");
   });
 
   it("sends one combined question request for five uploaded PDFs", async () => {

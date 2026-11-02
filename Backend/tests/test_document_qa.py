@@ -32,6 +32,13 @@ def test_cors_does_not_allow_an_unconfigured_production_origin():
     assert "access-control-allow-origin" not in response.headers
 
 
+def test_cors_origins_are_normalized_and_deduplicated():
+    assert main_module.parse_cors_origins(
+        " https://omnibrain-frontend-be3o.onrender.com/ ,"
+        "https://omnibrain-frontend-be3o.onrender.com"
+    ) == ["https://omnibrain-frontend-be3o.onrender.com"]
+
+
 def test_cors_allows_local_development_origin():
     response = TestClient(app).options(
         "/api/documents/upload",
@@ -44,6 +51,9 @@ def test_cors_allows_local_development_origin():
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "POST" in response.headers["access-control-allow-methods"]
+    assert "DELETE" in response.headers["access-control-allow-methods"]
+    assert "content-type" in response.headers["access-control-allow-headers"].lower()
 
 
 def test_readiness_reports_missing_provider_configuration(monkeypatch):

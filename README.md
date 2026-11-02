@@ -270,7 +270,7 @@ Set these variables in the Render dashboard; do not put credentials in `render.y
 | `PINECONE_API_KEY` | Required; Pinecone index/vector storage |
 | `GEMINI_API_KEY` | Required for generated answers |
 | `OLLAMA_URL` | Required; URL of an Ollama API reachable from Render (not `localhost`) |
-| `CORS_ORIGINS` | Required after frontend creation; the exact frontend origin, without a trailing slash |
+| `CORS_ORIGINS` | `https://omnibrain-frontend-be3o.onrender.com` (exact frontend origin; no trailing slash) |
 | `GEMINI_MODEL` | Required; use a model supported by the Gemini API key (recommended: `gemini-3.6-flash`) |
 | `PINECONE_INDEX_NAME` | Optional; defaults to `omnibrain-documents` |
 | `PINECONE_CLOUD`, `PINECONE_REGION` | Optional; used if the index needs to be created |
@@ -294,9 +294,9 @@ Only files under the mount are durable. Without it, PDFs and local processing da
 | Root Directory | `Frontend` |
 | Build Command | `npm ci && npm run build` |
 | Publish Directory | `dist` |
-| Environment Variable | `VITE_API_URL=https://<your-backend-service>.onrender.com` |
+| Environment Variable | `VITE_API_URL=https://omnibrain-backend-1tdn.onrender.com` |
 
-Create the backend and frontend services first, then replace the placeholder with the actual backend URL and set `CORS_ORIGINS` on the backend to the exact frontend origin, for example `https://<your-frontend-site>.onrender.com`. These are placeholders, not deployed service URLs. Local Vite origins remain allowed for development; production origins are not hard-coded and must be configured explicitly.
+The deployed frontend is `https://omnibrain-frontend-be3o.onrender.com` (letter `o` before `.onrender.com`); the similar `...be30...` hostname (zero) returns 404. The frontend build must receive `VITE_API_URL=https://omnibrain-backend-1tdn.onrender.com`. Set the backend's `CORS_ORIGINS` to the exact frontend origin. Local Vite origins remain allowed for development; production origins are read from the backend environment.
 
 ### Operational and privacy limitations
 

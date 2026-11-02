@@ -163,9 +163,9 @@ async function request(
 
       throw new ApiError(
         interruptionMessages.network ||
-          `Could not reach OmniBrain at ${API_BASE_URL}. ` +
-            "Check that the backend is running and its CORS settings " +
-            "allow this frontend.",
+          `Could not reach OmniBrain at ${API_BASE_URL} from ` +
+            `${window.location.origin}. Check the backend URL and set ` +
+            "CORS_ORIGINS to this exact frontend origin (without a trailing slash).",
         null,
         "NETWORK_ERROR",
       );

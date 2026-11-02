@@ -45,14 +45,22 @@ DEFAULT_CORS_ORIGINS = (
     "http://localhost:3000,"
     "http://127.0.0.1:3000"
 )
-CORS_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv(
-        "CORS_ORIGINS",
-        DEFAULT_CORS_ORIGINS,
-    ).split(",")
-    if origin.strip()
-]
+
+
+def parse_cors_origins(origins: str) -> list[str]:
+    """Parse comma-separated origins and normalize optional trailing slashes."""
+    return list(
+        dict.fromkeys(
+            origin.strip().rstrip("/")
+            for origin in origins.split(",")
+            if origin.strip()
+        )
+    )
+
+
+CORS_ORIGINS = parse_cors_origins(
+    os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
+)
 
 # --------------------------------------------------
 # 2. Create FastAPI application
@@ -87,7 +95,7 @@ app.add_middleware(
     allow_origins=CORS_ORIGINS,
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=False,
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
 
