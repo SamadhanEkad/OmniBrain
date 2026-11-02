@@ -10,6 +10,10 @@ from app import main as main_module
 from app.services import answer_generator
 from app.services.answer_generator import (
     GeminiAuthenticationError,
+    GeminiModelError,
+    GeminiQuotaError,
+    GeminiTimeoutError,
+    GeminiUnavailableError,
     build_prompt,
 )
 from app.services import document_qa_service
@@ -208,6 +212,72 @@ def test_invalid_gemini_key_is_reported_without_echoing_provider_details(
     mock_client.models.generate_content.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    ("status_code", "exception_type"),
+    [
+        (401, GeminiAuthenticationError),
+        (403, GeminiAuthenticationError),
+        (404, GeminiModelError),
+        (408, GeminiTimeoutError),
+        (429, GeminiQuotaError),
+        (500, GeminiUnavailableError),
+    ],
+)
+def test_gemini_provider_errors_are_classified_safely(
+    monkeypatch,
+    status_code,
+    exception_type,
+):
+    from google.genai.errors import ClientError
+
+    mock_client = Mock()
+    mock_client.models.generate_content.side_effect = ClientError(
+        code=status_code,
+        response_json={"message": "provider response must not reach clients"},
+    )
+    monkeypatch.setattr(
+        answer_generator,
+        "get_gemini_client",
+        Mock(return_value=mock_client),
+    )
+    monkeypatch.setattr(
+        answer_generator,
+        "DEFAULT_GEMINI_MODEL",
+        "gemini-3.6-flash",
+    )
+
+    with pytest.raises(exception_type):
+        answer_generator.generate_answer(
+            "What does the document say?",
+            [{"page_number": 1, "text": "The answer evidence."}],
+        )
+
+
+def test_gemini_timeout_is_reported_as_a_timeout(monkeypatch):
+    import httpx
+
+    mock_client = Mock()
+    mock_client.models.generate_content.side_effect = httpx.ReadTimeout(
+        "request timed out",
+    )
+    monkeypatch.setattr(
+        answer_generator,
+        "get_gemini_client",
+        Mock(return_value=mock_client),
+    )
+    monkeypatch.setattr(
+        answer_generator,
+        "DEFAULT_GEMINI_MODEL",
+        "gemini-3.6-flash",
+    )
+
+    with pytest.raises(answer_generator.GeminiTimeoutError):
+        answer_generator.generate_answer(
+            "What does the document say?",
+            [{"page_number": 1, "text": "The answer evidence."}],
+        )
+
+
 def test_answer_question_endpoint_returns_answer_and_sources(monkeypatch):
     result = {
         "answer": "The report contains two sections.",
@@ -303,6 +373,65 @@ def test_answer_question_endpoint_reports_vector_db_unavailable(monkeypatch):
 
     assert response.status_code == 503
     assert "temporarily unavailable" in response.json()["detail"]
+
+
+def test_answer_endpoint_logs_redacted_traceback_without_exposing_provider_details(
+    monkeypatch,
+    caplog,
+):
+    secret = "test-only-pinecone-secret"
+    monkeypatch.setattr("app.api.questions.PINECONE_API_KEY", secret)
+    monkeypatch.setattr(
+        "app.api.questions.answer_documents_question",
+        Mock(side_effect=RuntimeError(f"failure involving {secret}")),
+    )
+    document_id = "123e4567-e89b-12d3-a456-426614174000"
+
+    with caplog.at_level("ERROR", logger="app.api.questions"):
+        response = TestClient(app).post(
+            "/api/documents/answer",
+            json={
+                "question": "What does the report say?",
+                "document_ids": [document_id],
+            },
+        )
+
+    assert response.status_code == 503
+    assert secret not in response.text
+    assert secret not in caplog.text
+    assert "Traceback (most recent call last)" in caplog.text
+    assert "RuntimeError: failure involving [REDACTED]" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("exception_type", "expected_status"),
+    [
+        (answer_generator.GeminiModelError, 503),
+        (answer_generator.GeminiQuotaError, 429),
+        (answer_generator.GeminiTimeoutError, 504),
+        (answer_generator.GeminiUnavailableError, 503),
+    ],
+)
+def test_multi_document_endpoint_maps_gemini_failures_to_safe_statuses(
+    monkeypatch,
+    exception_type,
+    expected_status,
+):
+    monkeypatch.setattr(
+        "app.api.questions.answer_documents_question",
+        Mock(side_effect=exception_type("safe provider error")),
+    )
+    response = TestClient(app).post(
+        "/api/documents/answer",
+        json={
+            "question": "What does the report say?",
+            "document_ids": ["123e4567-e89b-12d3-a456-426614174000"],
+        },
+    )
+
+    assert response.status_code == expected_status
+    assert "safe provider error" in response.json()["detail"]
+    assert "Traceback" not in response.text
 
 
 def test_answer_question_endpoint_reports_gemini_authentication_failure(

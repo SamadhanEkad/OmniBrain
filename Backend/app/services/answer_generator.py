@@ -3,6 +3,7 @@ import logging
 import time
 from functools import lru_cache
 
+import httpx
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError, ClientError
@@ -33,6 +34,22 @@ TEMPERATURE = 0.2
 
 class GeminiAuthenticationError(RuntimeError):
     """Raised when the configured Gemini key cannot access the API."""
+
+
+class GeminiModelError(RuntimeError):
+    """Raised when the configured Gemini model is unavailable."""
+
+
+class GeminiQuotaError(RuntimeError):
+    """Raised when Gemini rejects a request due to quota or rate limits."""
+
+
+class GeminiTimeoutError(RuntimeError):
+    """Raised when Gemini does not respond before the request timeout."""
+
+
+class GeminiUnavailableError(RuntimeError):
+    """Raised when Gemini cannot process a request temporarily."""
 
 
 # --------------------------------------------------
@@ -388,15 +405,19 @@ def generate_answer(
                 "confirm that Gemini API access is enabled for the key."
             ) from exc
         if status == 404:
-            raise RuntimeError(
+            raise GeminiModelError(
                 "The configured GEMINI_MODEL is unavailable to this API key. "
                 "Check the model ID and its availability."
             ) from exc
         if status == 429:
-            raise RuntimeError(
+            raise GeminiQuotaError(
                 "Gemini rate limit or quota was reached. Try again later."
             ) from exc
-        raise RuntimeError(
+        if status in (408, 504):
+            raise GeminiTimeoutError(
+                "Gemini did not respond before the request timeout."
+            ) from exc
+        raise GeminiUnavailableError(
             f"Gemini rejected the answer request (HTTP {status or 'unknown'})."
         ) from exc
     except APIError as exc:
@@ -406,7 +427,23 @@ def generate_answer(
             target_model,
             status or "unknown",
         )
-        raise RuntimeError(
+        if status == 429:
+            raise GeminiQuotaError(
+                "Gemini rate limit or quota was reached. Try again later."
+            ) from exc
+        if status in (408, 504):
+            raise GeminiTimeoutError(
+                "Gemini did not respond before the request timeout."
+            ) from exc
+        raise GeminiUnavailableError(
+            "Gemini answer generation is temporarily unavailable."
+        ) from exc
+    except httpx.TimeoutException as exc:
+        raise GeminiTimeoutError(
+            "Gemini did not respond before the request timeout."
+        ) from exc
+    except httpx.RequestError as exc:
+        raise GeminiUnavailableError(
             "Gemini answer generation is temporarily unavailable."
         ) from exc
 
