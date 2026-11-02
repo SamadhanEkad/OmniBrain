@@ -6,14 +6,19 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app import main as main_module
 from app.services import answer_generator
-from app.services.answer_generator import build_prompt
+from app.services.answer_generator import (
+    GeminiAuthenticationError,
+    build_prompt,
+)
 from app.services import document_qa_service
 from app.services import file_service
+from app.services import vector_store
 from app.services.text_chunker import chunk_extracted_json
 
 
-def test_cors_allows_deployed_frontend_origin():
+def test_cors_does_not_allow_an_unconfigured_production_origin():
     response = TestClient(app).options(
         "/api/documents/upload",
         headers={
@@ -23,10 +28,100 @@ def test_cors_allows_deployed_frontend_origin():
         },
     )
 
-    assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == (
-        "https://omnibrain-frontend-be3o.onrender.com"
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_cors_allows_local_development_origin():
+    response = TestClient(app).options(
+        "/api/documents/upload",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
     )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_readiness_reports_missing_provider_configuration(monkeypatch):
+    monkeypatch.setattr(main_module, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(main_module, "PINECONE_API_KEY", "")
+    monkeypatch.setattr(main_module, "OLLAMA_URL", "http://127.0.0.1:1")
+
+    response = TestClient(app).get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "not_ready",
+        "checks": {
+            "gemini": "not_configured",
+            "pinecone": "not_configured",
+            "ollama": "unavailable",
+        },
+    }
+
+
+def test_pinecone_index_is_created_and_waited_on_before_upserts(monkeypatch):
+    client = Mock()
+    client.list_indexes.return_value = []
+    client.describe_index.return_value = SimpleNamespace(
+        status=SimpleNamespace(ready=True),
+    )
+    monkeypatch.setattr(vector_store, "INDEX_NAME", "test-index")
+
+    vector_store.ensure_index(client, 768)
+
+    client.create_index.assert_called_once()
+    client.describe_index.assert_called_once_with("test-index")
+
+
+def test_pinecone_index_creation_times_out_if_index_never_becomes_ready(monkeypatch):
+    client = Mock()
+    client.list_indexes.return_value = []
+    client.describe_index.return_value = SimpleNamespace(
+        status=SimpleNamespace(ready=False),
+    )
+    monkeypatch.setattr(vector_store, "INDEX_NAME", "test-index")
+    monkeypatch.setattr(vector_store, "INDEX_READY_TIMEOUT_SECONDS", 0)
+
+    with pytest.raises(RuntimeError, match="was not ready before the timeout"):
+        vector_store.ensure_index(client, 768)
+
+
+def test_existing_pinecone_index_is_validated_without_recreation(monkeypatch):
+    client = Mock()
+    client.list_indexes.return_value = [
+        SimpleNamespace(name="test-index"),
+    ]
+    client.describe_index.return_value = SimpleNamespace(
+        dimension=768,
+        metric="cosine",
+    )
+    monkeypatch.setattr(vector_store, "INDEX_NAME", "test-index")
+
+    vector_store.ensure_index(client, 768)
+
+    client.create_index.assert_not_called()
+    client.describe_index.assert_called_once_with("test-index")
+
+
+def test_is_document_indexed_uses_configured_dimension_without_extra_describe():
+    client = Mock()
+    client.list_indexes.return_value = [
+        SimpleNamespace(name=vector_store.INDEX_NAME),
+    ]
+    index = client.Index.return_value
+    index.query.return_value = SimpleNamespace(matches=[object()])
+
+    assert vector_store.is_document_indexed(
+        client,
+        "123e4567-e89b-12d3-a456-426614174000",
+    )
+    assert len(index.query.call_args.kwargs["vector"]) == vector_store.VECTOR_SIZE
+    client.describe_index.assert_not_called()
 
 
 def test_answer_prompt_uses_the_supplied_evidence_and_question():
@@ -50,6 +145,11 @@ def test_answer_generation_uses_bounded_context_and_output(monkeypatch):
         "get_gemini_client",
         Mock(return_value=mock_client),
     )
+    monkeypatch.setattr(
+        answer_generator,
+        "DEFAULT_GEMINI_MODEL",
+        "gemini-3.6-flash",
+    )
 
     result = answer_generator.generate_answer(
         "What does the document explain?",
@@ -64,12 +164,47 @@ def test_answer_generation_uses_bounded_context_and_output(monkeypatch):
     assert len(answer_generator.prepare_context([{"text": "evidence " * 2000}])) <= answer_generator.MAX_CONTEXT_CHARS
 
 
+def test_invalid_gemini_key_is_reported_without_echoing_provider_details(
+    monkeypatch,
+):
+    from google.genai.errors import ClientError
+
+    mock_client = Mock()
+    mock_client.models.generate_content.side_effect = ClientError(
+        code=401,
+        response_json={"message": "invalid private key details"},
+    )
+    monkeypatch.setattr(
+        answer_generator,
+        "get_gemini_client",
+        Mock(return_value=mock_client),
+    )
+    monkeypatch.setattr(
+        answer_generator,
+        "DEFAULT_GEMINI_MODEL",
+        "gemini-3.6-flash",
+    )
+
+    with pytest.raises(
+        GeminiAuthenticationError,
+        match="Verify GEMINI_API_KEY",
+    ) as exc_info:
+        answer_generator.generate_answer(
+            "What is the finding?",
+            [{"page_number": 2, "text": "The finding is supported by evidence."}],
+        )
+
+    assert "private key details" not in str(exc_info.value)
+    mock_client.models.generate_content.assert_called_once()
+
+
 def test_answer_question_endpoint_returns_answer_and_sources(monkeypatch):
     result = {
         "answer": "The report contains two sections.",
         "sources": [
             {
                 "document_id": "123e4567-e89b-12d3-a456-426614174000",
+                "filename": None,
                 "chunk_id": "chunk_00001",
                 "page_number": 2,
                 "score": 0.91,
@@ -96,6 +231,46 @@ def test_answer_question_endpoint_returns_answer_and_sources(monkeypatch):
     )
 
 
+def test_selected_documents_endpoint_uses_one_multi_document_pipeline(monkeypatch):
+    document_ids = [
+        f"{number}23e4567-e89b-12d3-a456-426614174000"
+        for number in range(1, 6)
+    ]
+    result = {
+        "answer": "The documents describe different methods.",
+        "sources": [
+            {
+                "document_id": document_ids[0],
+                "filename": "first.pdf",
+                "chunk_id": "chunk_1",
+                "page_number": 2,
+                "score": 0.9,
+                "text": "Method evidence.",
+            }
+        ],
+    }
+    answer = Mock(return_value=result)
+    monkeypatch.setattr(
+        "app.api.questions.answer_documents_question",
+        answer,
+    )
+
+    response = TestClient(app).post(
+        "/api/documents/answer",
+        json={
+            "question": "Compare the methods.",
+            "document_ids": document_ids,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == result
+    answer.assert_called_once_with(
+        "Compare the methods.",
+        document_ids=document_ids,
+    )
+
+
 def test_answer_question_endpoint_rejects_invalid_document_id():
     response = TestClient(app).post(
         "/api/documents/not-a-uuid/answer",
@@ -117,7 +292,28 @@ def test_answer_question_endpoint_reports_vector_db_unavailable(monkeypatch):
     )
 
     assert response.status_code == 503
-    assert "Pinecone is not reachable." in response.json()["detail"]
+    assert "temporarily unavailable" in response.json()["detail"]
+
+
+def test_answer_question_endpoint_reports_gemini_authentication_failure(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.api.questions.answer_document_question",
+        Mock(
+            side_effect=GeminiAuthenticationError(
+                "Gemini authentication failed. Verify GEMINI_API_KEY."
+            )
+        ),
+    )
+
+    response = TestClient(app).post(
+        "/api/documents/123e4567-e89b-12d3-a456-426614174000/answer",
+        json={"question": "What is in this document?"},
+    )
+
+    assert response.status_code == 503
+    assert "Gemini authentication failed" in response.json()["detail"]
 
 
 def test_delete_document_endpoint_also_removes_vectors(monkeypatch):
@@ -199,7 +395,7 @@ def test_document_is_indexed_once_and_existing_index_is_reused(
 
     extract.assert_not_called()
     client.close.assert_called_once()
-    generate_metadata.assert_called_once()
+    generate_metadata.assert_not_called()
 
 
 def test_answer_document_question_returns_retrieved_citations(monkeypatch):
@@ -283,7 +479,10 @@ def test_filename_and_page_count_questions_use_saved_upload_information(
     search.assert_not_called()
 
 
-def test_overview_questions_reuse_persisted_metadata(monkeypatch, tmp_path):
+def test_document_overview_uses_retrieved_chunks_and_page_citations(
+    monkeypatch,
+    tmp_path,
+):
     document_id = "123e4567-e89b-12d3-a456-426614174000"
     (tmp_path / f"{document_id}.pdf").touch()
     monkeypatch.setattr(document_qa_service, "RAW_DATA_DIR", tmp_path)
@@ -294,47 +493,47 @@ def test_overview_questions_reuse_persisted_metadata(monkeypatch, tmp_path):
         page_count=12,
         metadata_status="pending",
     )
-    generate_metadata = Mock(
-        return_value={
-            "document_summary": "The report describes project outcomes.",
-            "document_purpose": "To evaluate the project.",
-            "document_type": "Project report",
-            "total_pages": 12,
+    chunks = [
+        {
+            "document_id": document_id,
+            "chunk_id": "chunk_00001",
+            "page_number": 3,
+            "text": "The report describes project outcomes.",
         }
+    ]
+    monkeypatch.setattr(
+        document_qa_service,
+        "ensure_document_indexed",
+        Mock(),
     )
     monkeypatch.setattr(
         document_qa_service,
-        "generate_metadata",
-        generate_metadata,
+        "load_all_document_chunks",
+        Mock(return_value=chunks),
     )
-    monkeypatch.setattr(
-        document_qa_service,
-        "search_documents",
-        Mock(side_effect=AssertionError("Overview must not use retrieval")),
-    )
+    generate_metadata = Mock(side_effect=AssertionError("Metadata is not required for Q&A"))
+    generate_answer = Mock(return_value="The report describes project outcomes.")
+    monkeypatch.setattr(document_qa_service, "generate_metadata", generate_metadata)
+    monkeypatch.setattr(document_qa_service, "generate_answer", generate_answer)
 
     summary = document_qa_service.answer_document_question(
         document_id,
-        "Summarize this document.",
-    )
-    purpose = document_qa_service.answer_document_question(
-        document_id,
-        "What is the purpose of this document?",
-    )
-    document_type = document_qa_service.answer_document_question(
-        document_id,
-        "What type of document is this?",
+        "Summarize the entire document.",
     )
 
     assert summary["answer"] == "The report describes project outcomes."
-    assert purpose["answer"] == "To evaluate the project."
-    assert document_type["answer"] == "Project report"
-    assert summary["sources"] == purpose["sources"] == document_type["sources"] == []
-    generate_metadata.assert_called_once_with(
-        str(tmp_path / f"{document_id}.pdf"),
-        document_id=document_id,
-    )
-    assert file_service.load_document_info(document_id)["metadata_status"] == "complete"
+    assert summary["sources"] == [
+        {
+            "document_id": document_id,
+            "filename": "original-report.pdf",
+            "chunk_id": "chunk_00001",
+            "page_number": 3,
+            "score": None,
+            "text": "The report describes project outcomes.",
+        }
+    ]
+    generate_answer.assert_called_once()
+    generate_metadata.assert_not_called()
 
 
 def test_missing_document_is_reported_for_saved_information_questions(
@@ -371,18 +570,11 @@ def test_metadata_generation_failure_is_saved_and_reported_gracefully(
         generate_metadata,
     )
 
-    first_result = document_qa_service.answer_document_question(
-        document_id,
-        "Summarize this document.",
-    )
-    second_result = document_qa_service.answer_document_question(
-        document_id,
-        "What is its purpose?",
-    )
+    first_result = document_qa_service.ensure_document_metadata(document_id)
+    second_result = document_qa_service.ensure_document_metadata(document_id)
 
-    assert "metadata generation failed" in first_result["answer"]
+    assert first_result["metadata_status"] == "failed"
     assert second_result == first_result
-    assert first_result["sources"] == []
     assert file_service.load_document_info(document_id)["metadata_status"] == "failed"
     generate_metadata.assert_called_once()
 
@@ -446,6 +638,20 @@ def test_summarize_in_100_words_calls_answer_generator(monkeypatch, tmp_path):
     index = Mock()
     generate = Mock(return_value="A custom 100-word generated summary.")
     monkeypatch.setattr(document_qa_service, "ensure_document_indexed", index)
+    monkeypatch.setattr(
+        document_qa_service,
+        "load_all_document_chunks",
+        Mock(
+            return_value=[
+                {
+                    "document_id": document_id,
+                    "chunk_id": "chunk_00001",
+                    "page_number": 2,
+                    "text": "The report describes its findings.",
+                }
+            ]
+        ),
+    )
     monkeypatch.setattr(document_qa_service, "generate_answer", generate)
 
     result = document_qa_service.answer_document_question(

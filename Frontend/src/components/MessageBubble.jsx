@@ -130,6 +130,37 @@ export default function MessageBubble({ message }) {
           </div>
         )}
 
+        {!isUser && !isPending && Array.isArray(message.sources) && message.sources.length > 0 && (
+          <section className="message-sources" aria-label="Answer sources">
+            <strong>Sources</strong>
+            <ul>
+              {message.sources.map((source, index) => {
+                const filename = source.filename || "Document";
+                const page = Number.isInteger(source.page_number)
+                  ? `Page ${source.page_number}`
+                  : "Page unavailable";
+                const key = [
+                  source.document_id,
+                  source.chunk_id,
+                  source.page_number,
+                  index,
+                ].join(":");
+
+                return (
+                  <li key={key}>
+                    <details>
+                      <summary>{filename} — {page}</summary>
+                      {typeof source.text === "string" && (
+                        <p>{source.text}</p>
+                      )}
+                    </details>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
+
         {hasError && (
           <div
             className="message-error"

@@ -1,11 +1,25 @@
+from contextlib import asynccontextmanager
 import logging
 import os
 
-from fastapi import FastAPI
+import requests
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from google.genai.errors import APIError
 
 from app.api.questions import router as questions_router
 from app.api.upload import router as upload_router
+from app.config import (
+    EMBEDDING_MODEL,
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
+    OLLAMA_URL,
+    PINECONE_API_KEY,
+    PINECONE_INDEX_NAME,
+    VECTOR_SIZE,
+)
+from app.services.answer_generator import get_gemini_client
+from app.services.retrieval_service import get_pinecone_client
 
 
 # --------------------------------------------------
@@ -31,8 +45,6 @@ DEFAULT_CORS_ORIGINS = (
     "http://localhost:3000,"
     "http://127.0.0.1:3000"
 )
-DEPLOYED_FRONTEND_ORIGIN = "https://omnibrain-frontend-be3o.onrender.com"
-
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
@@ -41,13 +53,19 @@ CORS_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
-if DEPLOYED_FRONTEND_ORIGIN not in CORS_ORIGINS:
-    CORS_ORIGINS.append(DEPLOYED_FRONTEND_ORIGIN)
-
 
 # --------------------------------------------------
 # 2. Create FastAPI application
 # --------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    logger.info("OmniBrain API is starting.")
+    logger.info("API version: %s", APP_VERSION)
+    logger.info("Allowed frontend origins: %s", CORS_ORIGINS)
+    yield
+    logger.info("OmniBrain API is shutting down.")
+
 
 app = FastAPI(
     title="OmniBrain API",
@@ -56,6 +74,7 @@ app = FastAPI(
         "metadata generation, and document question answering."
     ),
     version=APP_VERSION,
+    lifespan=lifespan,
 )
 
 
@@ -67,9 +86,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type"],
 )
 
 
@@ -116,17 +135,90 @@ def health_check():
     }
 
 
-# --------------------------------------------------
-# 7. Application startup and shutdown logging
-# --------------------------------------------------
+@app.get("/ready", tags=["System"])
+def readiness_check(response: Response):
+    """Check that the configured AI and vector services are reachable."""
+    checks: dict[str, str] = {}
 
-@app.on_event("startup")
-async def startup_event():
-    logger.info("OmniBrain API is starting.")
-    logger.info("API version: %s", APP_VERSION)
-    logger.info("Allowed frontend origins: %s", CORS_ORIGINS)
+    if not GEMINI_API_KEY or not GEMINI_API_KEY.strip():
+        checks["gemini"] = "not_configured"
+    elif not GEMINI_MODEL:
+        checks["gemini"] = "model_not_configured"
+    else:
+        try:
+            get_gemini_client().models.get(model=GEMINI_MODEL)
+            checks["gemini"] = "ready"
+        except APIError as exc:
+            checks["gemini"] = (
+                "authentication_failed"
+                if getattr(exc, "code", None) in (401, 403)
+                else "unavailable"
+            )
+            logger.warning(
+                "Gemini readiness check failed (HTTP %s).",
+                getattr(exc, "code", "unknown"),
+            )
+        except Exception as exc:
+            checks["gemini"] = "unavailable"
+            logger.warning(
+                "Gemini readiness check failed (%s).",
+                type(exc).__name__,
+            )
 
+    if not PINECONE_API_KEY or not PINECONE_API_KEY.strip():
+        checks["pinecone"] = "not_configured"
+    else:
+        client = None
+        try:
+            client = get_pinecone_client()
+            index_names = [index.name for index in client.list_indexes()]
+            if PINECONE_INDEX_NAME not in index_names:
+                checks["pinecone"] = "index_unavailable"
+            else:
+                description = client.describe_index(PINECONE_INDEX_NAME)
+                checks["pinecone"] = (
+                    "ready"
+                    if getattr(description, "dimension", None) == VECTOR_SIZE
+                    and getattr(description, "metric", None) == "cosine"
+                    else "index_misconfigured"
+                )
+        except Exception as exc:
+            checks["pinecone"] = (
+                "authentication_failed"
+                if getattr(exc, "status", None) == 401
+                or "unauthorized" in type(exc).__name__.casefold()
+                else "unavailable"
+            )
+            logger.warning(
+                "Pinecone readiness check failed (%s).",
+                type(exc).__name__,
+            )
+        finally:
+            if client is not None and hasattr(client, "close"):
+                client.close()
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("OmniBrain API is shutting down.")
+    try:
+        ollama_response = requests.get(
+            f"{OLLAMA_URL}/api/tags",
+            timeout=(3, 8),
+        )
+        ollama_response.raise_for_status()
+        models = ollama_response.json().get("models", [])
+        model_names = {
+            model["name"].split(":")[0]
+            for model in models
+            if isinstance(model, dict)
+            and isinstance(model.get("name"), str)
+        }
+        checks["ollama"] = (
+            "ready" if EMBEDDING_MODEL in model_names else "model_unavailable"
+        )
+    except (requests.exceptions.RequestException, ValueError, AttributeError):
+        checks["ollama"] = "unavailable"
+
+    is_ready = all(status == "ready" for status in checks.values())
+    response.status_code = 200 if is_ready else 503
+    return {
+        "status": "ready" if is_ready else "not_ready",
+        "checks": checks,
+    }

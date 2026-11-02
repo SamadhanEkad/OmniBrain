@@ -304,11 +304,7 @@ export const api = {
     );
   },
 
-  // Ask a question about one or more PDFs.
-  // The backend answers one PDF per request:
-  //   POST /api/documents/{document_id}/answer
-  // With several PDFs, each one is asked separately and the answers
-  // are combined under the PDF names.
+  // Ask one grounded question across the selected PDFs.
   async answerQuestion(documentIds, question) {
     const ids = Array.isArray(documentIds) ? documentIds : [documentIds];
 
@@ -329,73 +325,22 @@ export const api = {
 
     const text = question.trim();
 
-    const askOne = (id) =>
-      request(
-        `/api/documents/${encodeURIComponent(id)}/answer`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: text }),
-        },
-        ANSWER_TIMEOUT,
-        {
-          timeout:
-            "Answer generation took too long. Check the backend logs " +
-            "before submitting the question again.",
-          network:
-            "The connection to OmniBrain was interrupted. Check the " +
-            "backend status before retrying.",
-        },
-      );
-
-    // One PDF: use the backend response as it is.
-    if (ids.length === 1) {
-      return askOne(ids[0]);
-    }
-
-    // Several PDFs: ask each one, then combine the results.
-    const settled = await Promise.allSettled(ids.map(askOne));
-
-    const parts = [];
-    const sources = [];
-    const failures = [];
-
-    settled.forEach((outcome, index) => {
-      if (
-        outcome.status === "fulfilled" &&
-        typeof outcome.value?.answer === "string"
-      ) {
-        const value = outcome.value;
-        const label =
-          value.sources?.find((source) => source?.filename)?.filename ||
-          `PDF ${index + 1}`;
-
-        parts.push(`**${label}**\n\n${value.answer}`);
-
-        if (Array.isArray(value.sources)) {
-          sources.push(...value.sources);
-        }
-      } else {
-        failures.push(
-          outcome.status === "rejected" && outcome.reason instanceof Error
-            ? outcome.reason.message
-            : "unexpected response",
-        );
-      }
-    });
-
-    if (parts.length === 0) {
-      throw new ApiError(
-        failures[0] || "The question could not be answered.",
-      );
-    }
-
-    if (failures.length > 0) {
-      parts.push(
-        `_${failures.length} PDF${failures.length === 1 ? "" : "s"} could not be searched: ${failures[0]}_`,
-      );
-    }
-
-    return { answer: parts.join("\n\n---\n\n"), sources };
+    return request(
+      "/api/documents/answer",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: text, document_ids: ids }),
+      },
+      ANSWER_TIMEOUT,
+      {
+        timeout:
+          "Answer generation took too long. Check the backend readiness " +
+          "endpoint and logs before submitting the question again.",
+        network:
+          "The connection to OmniBrain was interrupted. Check the " +
+          "backend status before retrying.",
+      },
+    );
   },
 };

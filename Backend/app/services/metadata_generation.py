@@ -1,7 +1,6 @@
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any, Iterator
@@ -11,11 +10,11 @@ import requests
 from dotenv import load_dotenv
 
 from app.config import (
-    GEMINI_API_KEY,
     GEMINI_MODEL,
     OLLAMA_LLM_MODEL,
     OLLAMA_URL,
 )
+from app.services.answer_generator import get_gemini_client
 
 load_dotenv()
 
@@ -232,55 +231,28 @@ def _request_metadata_gemini(
     pdf_metadata: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Generate metadata using Google Gemini API."""
-    api_key = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY")
-    if not api_key or not api_key.strip():
-        return None
-
-    clean_key = api_key.strip().strip("'\"").strip()
-    if clean_key.startswith("<") and clean_key.endswith(">"):
+    if not GEMINI_MODEL:
         return None
 
     try:
-        from google import genai
         from google.genai import types
-
-        client = genai.Client(api_key=clean_key)
-        target_model = (GEMINI_MODEL or os.getenv("GEMINI_MODEL", "gemini-3.8-flash")).strip()
-
-        candidate_models = [target_model]
-        for fallback in (
-            "gemini-3.5-flash",
-            "gemini-flash-lite-latest",
-            "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
-            "gemini-3.8-flash",
-        ):
-            if fallback not in candidate_models:
-                candidate_models.append(fallback)
 
         config = types.GenerateContentConfig(
             temperature=0.1,
             response_mime_type="application/json",
             max_output_tokens=1500,
         )
-
-        for model_name in candidate_models:
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=config,
-                )
-                if response and response.text:
-                    cleaned_text = _clean_json_text(response.text)
-                    parsed = json.loads(cleaned_text)
-                    return _validate_metadata(parsed, total_pages, pdf_metadata)
-            except Exception as exc:
-                logger.warning("Gemini model '%s' metadata generation failed: %s", model_name, exc)
-                continue
-
+        response = get_gemini_client().models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=config,
+        )
+        if response and response.text:
+            cleaned_text = _clean_json_text(response.text)
+            parsed = json.loads(cleaned_text)
+            return _validate_metadata(parsed, total_pages, pdf_metadata)
     except Exception as exc:
-        logger.warning("Gemini metadata generation error: %s", exc)
+        logger.warning("Gemini metadata generation failed (%s).", type(exc).__name__)
 
     return None
 
@@ -312,7 +284,7 @@ def _request_metadata_ollama(
         generated = json.loads(_clean_json_text(result.get("response", "")))
         return _validate_metadata(generated, total_pages, pdf_metadata)
     except Exception as exc:
-        logger.warning("Ollama metadata fallback failed: %s", exc)
+        logger.warning("Ollama metadata fallback failed (%s).", type(exc).__name__)
         return None
 
 

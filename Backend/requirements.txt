@@ -9,4 +9,4 @@ requests==2.34.2
 ollama==0.6.3
 pinecone==10.1.0
 python-dotenv==1.2.4
-google-genai==2.31.0
+google-genai==2.34.0

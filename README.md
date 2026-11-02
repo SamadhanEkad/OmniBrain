@@ -44,7 +44,7 @@ flowchart TD
     API --> FE
 ```
 
-Document metadata generation tries Gemini first, then the local Ollama model `llama3.2:1b`, and finally a deterministic fallback. The `llama3.2:1b` model is **not** the question-answering model.
+Normal question answering does not make a separate metadata-generation request. Document overviews use retrieved page-level passages and return their citations with the answer.
 
 ## Technology stack
 
@@ -59,7 +59,7 @@ Document metadata generation tries Gemini first, then the local Ollama model `ll
 | Vector database | Pinecone, using a cosine-distance index |
 | Configuration | `python-dotenv` and environment variables |
 
-The answer model is selected with `GEMINI_MODEL` (default: `gemini-3.8-flash`). The intended `llama3.2:1b` model is only an optional metadata-generation fallback; it is not the question-answering model.
+Set `GEMINI_MODEL` in the backend environment. The recommended stable model is `gemini-3.6-flash`, which Google describes as frontier-level intelligence optimized for speed and cost. `gemini-3.5-flash-lite` prioritizes low latency and high throughput, but should be quality-benchmarked against your PDFs before substituting it. Preview models are not selected implicitly. See Google's [model catalog](https://ai.google.dev/gemini-api/docs/models) and [Gemini 3.6 Flash details](https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash).
 
 ## Local development URLs
 
@@ -123,7 +123,7 @@ OmniBrain/
 - A Pinecone account and API key.
 - A Google Gemini API key for answer generation.
 
-The local `llama3.2:1b` model is optional: it is used only if Gemini-based metadata generation is unavailable. OmniBrain can also use deterministic metadata as a final fallback.
+The local `llama3.2:1b` model is used only by the optional metadata-generation helper; normal question answering does not call it.
 
 ## Installation and setup
 
@@ -171,7 +171,7 @@ Set the Pinecone and Gemini credentials in the same PowerShell session that will
 ```powershell
 $env:PINECONE_API_KEY = "<your-pinecone-api-key>"
 $env:GEMINI_API_KEY = "<your-gemini-api-key>"
-$env:GEMINI_MODEL = "<available-gemini-model>"
+$env:GEMINI_MODEL = "gemini-3.6-flash"
 ```
 
 The code creates the Pinecone index if it does not exist. Its defaults are index `omnibrain-documents`, AWS cloud, region `us-east-1`, and 768 vector dimensions. The current implementation uses Pinecone's default namespace; no configurable namespace is active. The embedding model, vector size, and Pinecone index dimensions must agree.
@@ -217,10 +217,12 @@ Open the frontend URL printed by Vite (normally `http://localhost:5173`). Attach
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/` | Returns basic API status and version information |
-| `GET` | `/health` | Checks that the API process is responding; it does not check AI or database services |
+| `GET` | `/health` | Liveness check; confirms that the API process is responding |
+| `GET` | `/ready` | Readiness check for Gemini authentication/model access, Pinecone, and the configured Ollama embedding model |
 | `POST` | `/api/documents/upload` | Accepts multipart form data with one or more files under the repeated `files` field; returns `uploaded` and `failed` lists |
 | `DELETE` | `/api/documents/{document_id}` | Removes the local document files and its Pinecone vectors |
-| `POST` | `/api/documents/{document_id}/answer` | Accepts JSON `{"question": "..."}` and returns an `answer` and `sources` list |
+| `POST` | `/api/documents/answer` | Accepts JSON `{"question": "...", "document_ids": ["..."]}` for selected PDFs; runs combined retrieval and one answer-generation call |
+| `POST` | `/api/documents/{document_id}/answer` | Backward-compatible single-document endpoint accepting JSON `{"question": "..."}` |
 
 The question must contain 1–2000 characters. Each source may include `document_id`, `chunk_id`, `page_number`, `score`, and `text`. The interactive API reference is available at `/docs` while the backend is running.
 
@@ -233,14 +235,14 @@ The question must contain 1–2000 characters. Each source may include `document
 | `PINECONE_CLOUD` | Cloud used when creating the index | `aws` |
 | `PINECONE_REGION` | Region used when creating the index | `us-east-1` |
 | `GEMINI_API_KEY` | Authenticates Gemini answer generation | Required for generated answers |
-| `GEMINI_MODEL` | Gemini model name | `gemini-3.8-flash`; configure a model available to your API key |
+| `GEMINI_MODEL` | Gemini model name | Required; `gemini-3.6-flash` is recommended and must be available to the configured API key |
 | `OLLAMA_URL` | Ollama API base address used for document/query embeddings and the metadata fallback | `http://localhost:11434` locally; set a reachable service URL on Render |
 | `EMBEDDING_MODEL` | Ollama model used for both document and query embeddings | `nomic-embed-text-v2-moe` |
 | `OLLAMA_LLM_MODEL` | Local Ollama model used as a metadata fallback | `llama3.2:1b` |
 | `VECTOR_SIZE` | Expected Pinecone and embedding vector dimension | `768` |
 | `MAX_FILES_PER_UPLOAD` | Maximum PDFs in one upload request | `5` |
 | `MAX_UPLOAD_SIZE_BYTES` | Maximum size of each PDF | `20971520` bytes (20 MiB) |
-| `CORS_ORIGINS` | Comma-separated allowed frontend origins | Localhost origins, including Vite's default port |
+| `CORS_ORIGINS` | Comma-separated allowed frontend origins | Localhost origins by default; set the exact deployed frontend origin on Render |
 | `LOG_LEVEL` | Backend log level | `INFO` |
 | `PORT` | HTTP port for the backend | Supplied by Render; do not hardcode it |
 | `VITE_API_URL` | Backend base URL used by the frontend | Local development defaults to `http://127.0.0.1:8000`; required for production builds |
@@ -267,17 +269,17 @@ Set these variables in the Render dashboard; do not put credentials in `render.y
 |---|---|
 | `PINECONE_API_KEY` | Required; Pinecone index/vector storage |
 | `GEMINI_API_KEY` | Required for generated answers |
-| `OLLAMA_URL` | Required; URL of an Ollama API reachable from Render |
+| `OLLAMA_URL` | Required; URL of an Ollama API reachable from Render (not `localhost`) |
 | `CORS_ORIGINS` | Required after frontend creation; the exact frontend origin, without a trailing slash |
-| `GEMINI_MODEL` | Optional override; set to a model available to the configured Gemini API key |
+| `GEMINI_MODEL` | Required; use a model supported by the Gemini API key (recommended: `gemini-3.6-flash`) |
 | `PINECONE_INDEX_NAME` | Optional; defaults to `omnibrain-documents` |
 | `PINECONE_CLOUD`, `PINECONE_REGION` | Optional; used if the index needs to be created |
 | `EMBEDDING_MODEL`, `VECTOR_SIZE` | Keep at `nomic-embed-text-v2-moe` and `768` unless all stored vectors and the Pinecone index are deliberately migrated |
 | `OLLAMA_LLM_MODEL` | Optional metadata fallback only; defaults to `llama3.2:1b` |
 
-The default `OLLAMA_URL` (`localhost:11434`) is only for local development. On Render, localhost refers to the backend container, not a developer's computer. Provide an always-available Ollama service accessible from the backend and make sure it has `nomic-embed-text-v2-moe` available. Document metadata generation can fall back if Ollama is unavailable, but document indexing and retrieval cannot. No Ollama service or hosted embedding provider is provisioned by this repository.
+The default `OLLAMA_URL` (`localhost:11434`) is only for local development. On Render, localhost refers to the backend container, not a developer's computer. Provide an always-available Ollama service accessible from the backend and make sure it has `nomic-embed-text-v2-moe` available. `/ready` checks that the configured embedding model is installed. No Ollama service or hosted embedding provider is provisioned by this repository.
 
-The backend writes uploaded PDFs, document information, extracted text, chunks, and locally cached embeddings under `Backend/Data`. Render's ordinary filesystem is ephemeral. To preserve uploaded documents across restarts and deploys, use a paid Web Service with a persistent disk mounted at:
+The backend writes uploaded PDFs, document information, extracted text, chunks, and locally cached embeddings under `Backend/Data`. Render's ordinary filesystem is ephemeral. To preserve uploaded documents across restarts and deploys, use a Web Service with a persistent disk mounted at:
 
 ```text
 /opt/render/project/src/Backend/Data
@@ -294,23 +296,23 @@ Only files under the mount are durable. Without it, PDFs and local processing da
 | Publish Directory | `dist` |
 | Environment Variable | `VITE_API_URL=https://<your-backend-service>.onrender.com` |
 
-Create the backend and frontend services first, then replace the placeholder with the actual backend URL and set `CORS_ORIGINS` on the backend to the actual frontend origin, for example `https://<your-frontend-site>.onrender.com`. These are placeholders, not deployed service URLs. Local Vite origins remain allowed for development; production CORS allows the deployed OmniBrain frontend and any additionally configured origins.
+Create the backend and frontend services first, then replace the placeholder with the actual backend URL and set `CORS_ORIGINS` on the backend to the exact frontend origin, for example `https://<your-frontend-site>.onrender.com`. These are placeholders, not deployed service URLs. Local Vite origins remain allowed for development; production origins are not hard-coded and must be configured explicitly.
 
 ### Operational and privacy limitations
 
 - The backend has no authentication or per-user data isolation. Anyone who obtains a document ID can use the public API to ask questions about or delete that document. Do not upload confidential PDFs to a public deployment without adding an appropriate access-control layer.
 - Gemini and Pinecone credentials and usage are required for their respective services; their quotas and costs depend on the accounts you configure. Keep the keys in Render's backend environment variables only.
-- Pinecone stores vectors and text metadata remotely; the PDF and processing JSON remain local to the backend disk. The API health check only confirms that FastAPI is responding, not that Ollama, Gemini, or Pinecone is available.
-- The first question triggers synchronous extraction, chunking, and per-chunk embedding. A large document or a slow external Ollama service can exceed the hosting platform's request limits. External Ollama, Gemini, and Pinecone connectivity was not exercised during local validation.
+- Pinecone stores vectors and text metadata remotely; the PDF and processing JSON remain local to the backend disk. `/health` is a liveness check; `/ready` checks provider connectivity and model/index configuration.
+- The first question triggers extraction and chunking, then embeds chunks in batches and stores reusable vectors. A large document or slow external Ollama service can still exceed hosting request limits. External Ollama, Gemini, and Pinecone connectivity must be verified with deployed credentials.
 - PDF support is embedded-text extraction only. OCR, image/chart understanding, and a SQL agent are not implemented.
 
 ## Limitations
 
 - PDF extraction reads embedded text only. Scanned PDFs without selectable text are rejected; OCR and visual chart/table analysis are not implemented.
 - Upload limits are five PDFs per request and 20 MiB per file. The limit is per request, not a total conversation cap.
-- The first question about a PDF performs indexing and may take longer than subsequent questions.
+- The first question about a PDF performs indexing and may take longer than subsequent questions; cached embeddings are reused if a previous Pinecone indexing attempt failed.
 - Retrieval and generated answers can be incomplete or incorrect; check cited source passages against the original PDF.
-- Questions across several selected PDFs are handled as separate per-document requests and combined in the frontend.
+- Questions across selected PDFs use one backend request, one combined retrieval, and one Gemini generation call.
 - Deleting a PDF removes its local files and its Pinecone vectors.
 
 ## Troubleshooting
@@ -318,7 +320,7 @@ Create the backend and frontend services first, then replace the placeholder wit
 - **Backend does not start:** Confirm Python 3.12 is selected, activate the virtual environment, and install `Backend/requirements.txt`.
 - **Frontend dependencies are missing:** Run `npm ci` from `Frontend/`, then start it with `npm run dev`.
 - **Frontend cannot reach the backend:** Start the backend on port 8000, check that `VITE_API_URL` points to it, and restart Vite after changing its environment. The backend allows local development origins by default.
-- **Question answering fails:** Check `GEMINI_API_KEY` and `GEMINI_MODEL`, and verify that the configured Gemini model is available to the API key.
+- **Question answering fails:** Check `/ready`, `GEMINI_API_KEY`, and `GEMINI_MODEL`. Authentication failures are reported separately from an unavailable model.
 - **Embedding or indexing fails:** Make sure the configured Ollama service is reachable and `nomic-embed-text-v2-moe` is installed. Check that `PINECONE_API_KEY` is valid and the index dimension matches `VECTOR_SIZE` (768 by default).
 - **PDF upload or extraction fails:** Check that the file is a valid, unencrypted PDF under 20 MiB and contains selectable text. Scanned PDFs need OCR, which is not currently provided.
 

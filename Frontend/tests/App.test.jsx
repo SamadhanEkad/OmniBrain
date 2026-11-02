@@ -60,7 +60,7 @@ describe("OmniBrain document chat", () => {
       if (url.pathname === "/api/documents/upload") {
         return jsonResponse(uploadResult("doc-alpha", "notes.pdf"));
       }
-      if (url.pathname === "/api/documents/doc-alpha/answer") {
+      if (url.pathname === "/api/documents/answer") {
         sentQuestion = JSON.parse(options.body);
         return jsonResponse({
           answer: `## Key finding
@@ -76,6 +76,7 @@ The equation is $E=mc^2$.
 <script>alert("x")</script>`,
           sources: [{
             document_id: "doc-alpha",
+            filename: "notes.pdf",
             chunk_id: "chunk_1",
             page_number: 2,
             text: "The report identifies a 12% increase.",
@@ -94,7 +95,10 @@ The equation is $E=mc^2$.
     await ask(user, "What is the key finding?");
 
     await waitFor(() => expect(sentQuestion).toBeDefined());
-    expect(sentQuestion).toEqual({ question: "What is the key finding?" });
+    expect(sentQuestion).toEqual({
+      question: "What is the key finding?",
+      document_ids: ["doc-alpha"],
+    });
     await waitFor(() => {
       const answer = document.querySelector(".markdown-answer");
       expect(answer?.textContent || document.querySelector(".message-list")?.textContent)
@@ -105,6 +109,10 @@ The equation is $E=mc^2$.
     expect(renderedAnswer?.querySelector("table")).not.toBeNull();
     expect(renderedAnswer?.querySelector(".katex")).not.toBeNull();
     expect(renderedAnswer?.querySelector("script")).toBeNull();
+    expect(screen.getByText("notes.pdf — Page 2")).toBeTruthy();
+    expect(
+      screen.getAllByText("The report identifies a 12% increase.").length,
+    ).toBeGreaterThan(1);
     const requestUrls = fetchMock.mock.calls.map(([url]) => new URL(url));
     const apiOrigin = new URL(api.baseUrl).origin;
     expect(requestUrls.every((url) => url.origin === apiOrigin)).toBe(true);
@@ -112,7 +120,7 @@ The equation is $E=mc^2$.
       expect.arrayContaining([
         "/health",
         "/api/documents/upload",
-        "/api/documents/doc-alpha/answer",
+        "/api/documents/answer",
       ]),
     );
   });
@@ -131,6 +139,67 @@ The equation is $E=mc^2$.
     expect(healthError.textContent).toContain("CORS settings");
   });
 
+  it("sends one combined question request for five uploaded PDFs", async () => {
+    const user = userEvent.setup();
+    const documentIds = Array.from({ length: 5 }, (_, index) => `doc-${index + 1}`);
+    const answerRequests = [];
+    const fetchMock = vi.fn(async (input, options) => {
+      const url = new URL(input);
+      if (url.pathname === "/health") return jsonResponse({ status: "healthy" });
+      if (url.pathname === "/api/documents/upload") {
+        return jsonResponse({
+          uploaded: documentIds.map((document_id, index) => ({
+            document_id,
+            filename: `file-${index + 1}.pdf`,
+            status: "uploaded",
+            page_count: 1,
+          })),
+          failed: [],
+        });
+      }
+      if (url.pathname === "/api/documents/answer") {
+        answerRequests.push(JSON.parse(options.body));
+        return jsonResponse({
+          answer: "The selected PDFs were searched together.",
+          sources: [
+            {
+              document_id: "doc-5",
+              filename: "file-5.pdf",
+              page_number: 1,
+              text: "Evidence from the fifth PDF.",
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    const picker = screen.getByLabelText("Choose PDF documents");
+    await user.upload(
+      picker,
+      documentIds.map(
+        (_, index) =>
+          new File([`pdf ${index + 1}`], `file-${index + 1}.pdf`, {
+            type: "application/pdf",
+          }),
+      ),
+    );
+    await user.click(screen.getByRole("button", { name: "Upload 5 PDFs" }));
+    await ask(user, "Compare all five PDFs.");
+
+    expect(
+      await screen.findByText("The selected PDFs were searched together."),
+    ).toBeTruthy();
+    expect(answerRequests).toEqual([
+      {
+        question: "Compare all five PDFs.",
+        document_ids: documentIds,
+      },
+    ]);
+  });
+
   it("keeps a late response from a previous conversation from replacing the selected document's answer", async () => {
     const user = userEvent.setup();
     let releaseFirstAnswer;
@@ -139,16 +208,17 @@ The equation is $E=mc^2$.
     });
     let uploadNumber = 0;
     const answerRequests = [];
-    const fetchMock = vi.fn(async (input) => {
+    const fetchMock = vi.fn(async (input, options) => {
       const url = new URL(input);
       if (url.pathname === "/health") return jsonResponse({ status: "healthy" });
       if (url.pathname === "/api/documents/upload") {
         uploadNumber += 1;
         return jsonResponse(uploadResult(`doc-${uploadNumber}`, `file-${uploadNumber}.pdf`));
       }
-      if (url.pathname.endsWith("/answer")) {
-        answerRequests.push({ path: url.pathname });
-        if (url.pathname === "/api/documents/doc-1/answer") return firstAnswer;
+      if (url.pathname === "/api/documents/answer") {
+        const documentIds = JSON.parse(options.body).document_ids;
+        answerRequests.push({ path: url.pathname, documentIds });
+        if (documentIds[0] === "doc-1") return firstAnswer;
         return jsonResponse({
           answer: "Answer from the second PDF.",
           sources: [{ document_id: "doc-2", text: "Second PDF evidence." }],
@@ -177,9 +247,9 @@ The equation is $E=mc^2$.
     await user.click(screen.getByRole("button", { name: /^Question for the second PDF/ }));
     expect(await screen.findByText("Answer from the second PDF.")).toBeTruthy();
     expect(screen.queryByText("Late answer from the first PDF.")).toBeNull();
-    expect(answerRequests.map((request) => request.path)).toEqual([
-      "/api/documents/doc-1/answer",
-      "/api/documents/doc-2/answer",
+    expect(answerRequests.map((request) => request.documentIds)).toEqual([
+      ["doc-1"],
+      ["doc-2"],
     ]);
 
     await user.click(screen.getByRole("button", { name: "History" }));
@@ -196,7 +266,7 @@ The equation is $E=mc^2$.
       if (url.pathname === "/api/documents/upload") {
         return jsonResponse(uploadResult("doc-empty", "empty.pdf"));
       }
-      if (url.pathname === "/api/documents/doc-empty/answer") {
+      if (url.pathname === "/api/documents/answer") {
         return jsonResponse({ detail: "No relevant passages were found in this document." }, 404);
       }
       throw new Error(`Unexpected request: ${url.pathname}`);
@@ -219,7 +289,7 @@ The equation is $E=mc^2$.
       if (url.pathname === "/api/documents/upload") {
         return jsonResponse(uploadResult("doc-expected", "expected.pdf"));
       }
-      if (url.pathname === "/api/documents/doc-expected/answer") {
+      if (url.pathname === "/api/documents/answer") {
         return jsonResponse({
           answer: "This answer belongs to another document.",
           sources: [{ document_id: "doc-other", text: "Foreign evidence." }],

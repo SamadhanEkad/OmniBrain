@@ -1,10 +1,11 @@
 import argparse
 import logging
 import time
+from functools import lru_cache
 
 from google import genai
 from google.genai import types
-from google.genai.errors import APIError, ClientError, ServerError
+from google.genai.errors import APIError, ClientError
 
 from app.config import GEMINI_API_KEY, GEMINI_MODEL
 from app.services.retrieval_service import (
@@ -24,15 +25,21 @@ MAX_CONTEXT_CHARS = 24000
 # Larger budget used when several PDFs contribute excerpts.
 MAX_MULTI_DOC_CONTEXT_CHARS = 40000
 MAX_OUTPUT_TOKENS = 2048
+GEMINI_TIMEOUT_MS = 60_000
 
 # Balanced temperature for natural, beginner-friendly explanations while preserving facts.
 TEMPERATURE = 0.2
+
+
+class GeminiAuthenticationError(RuntimeError):
+    """Raised when the configured Gemini key cannot access the API."""
 
 
 # --------------------------------------------------
 # 2. Gemini Client
 # --------------------------------------------------
 
+@lru_cache(maxsize=1)
 def get_gemini_client() -> genai.Client:
     """Connect to Google GenAI client using the configured API key."""
     api_key = GEMINI_API_KEY
@@ -44,10 +51,27 @@ def get_gemini_client() -> genai.Client:
     clean_key = api_key.strip().strip("'\"").strip()
     if clean_key.startswith("<") and clean_key.endswith(">"):
         raise RuntimeError(
-            f"GEMINI_API_KEY is currently set to placeholder '{clean_key}'. "
-            "Please replace it with your actual Gemini API key."
+            "GEMINI_API_KEY is set to a placeholder. "
+            "Set a valid Gemini API key in the backend environment."
         )
-    return genai.Client(api_key=clean_key)
+    if not GEMINI_MODEL:
+        raise RuntimeError(
+            "GEMINI_MODEL is not configured. Set it to a supported Gemini model."
+        )
+
+    return genai.Client(
+        api_key=clean_key,
+        http_options=types.HttpOptions(
+            timeout=GEMINI_TIMEOUT_MS,
+            retry_options=types.HttpRetryOptions(
+                attempts=2,
+                initial_delay=1,
+                max_delay=4,
+                jitter=1,
+                http_status_codes=[408, 429, 500, 502, 503, 504],
+            ),
+        ),
+    )
 
 
 # --------------------------------------------------
@@ -326,6 +350,10 @@ def generate_answer(
     )
 
     target_model = (model or DEFAULT_GEMINI_MODEL).strip()
+    if not target_model:
+        raise RuntimeError(
+            "GEMINI_MODEL is not configured. Set it to a supported Gemini model."
+        )
     client = get_gemini_client()
 
     logger.info(
@@ -341,63 +369,49 @@ def generate_answer(
     )
 
     t_gen_start = time.perf_counter()
-    response = None
-
-    candidate_models = [target_model]
-    for fallback in (
-        "gemini-3.5-flash",
-        "gemini-flash-lite-latest",
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-flash-lite",
-        "gemini-3.8-flash",
-    ):
-        if fallback not in candidate_models:
-            candidate_models.append(fallback)
-
-    last_error = None
-    for current_model in candidate_models:
-        for attempt in range(2):
-            try:
-                response = client.models.generate_content(
-                    model=current_model,
-                    contents=prompt,
-                    config=config,
-                )
-                if response and response.text:
-                    break
-            except ClientError as exc:
-                last_error = exc
-                if exc.code in (404, 429):
-                    logger.warning(
-                        "Model '%s' returned %d (%s). Trying next model candidate.",
-                        current_model,
-                        exc.code,
-                        getattr(exc, "message", str(exc)),
-                    )
-                    break
-                logger.warning("Model '%s' client error (%s). Trying next model candidate.", current_model, exc)
-                break
-            except (ServerError, APIError) as exc:
-                last_error = exc
-                code = getattr(exc, "code", None)
-                if code == 503 and attempt < 1:
-                    logger.warning(
-                        "Model '%s' returned 503. Retrying in 1s (attempt %d/2)...",
-                        current_model,
-                        attempt + 1,
-                    )
-                    time.sleep(1)
-                    continue
-                logger.warning("Model '%s' encountered error: %s", current_model, exc)
-                break
-            except Exception as exc:
-                last_error = exc
-                break
-        if response and response.text:
-            break
+    try:
+        response = client.models.generate_content(
+            model=target_model,
+            contents=prompt,
+            config=config,
+        )
+    except ClientError as exc:
+        status = getattr(exc, "code", None)
+        logger.warning(
+            "Gemini rejected the answer request (model=%s, HTTP %s).",
+            target_model,
+            status or "unknown",
+        )
+        if status in (401, 403):
+            raise GeminiAuthenticationError(
+                "Gemini authentication failed. Verify GEMINI_API_KEY and "
+                "confirm that Gemini API access is enabled for the key."
+            ) from exc
+        if status == 404:
+            raise RuntimeError(
+                "The configured GEMINI_MODEL is unavailable to this API key. "
+                "Check the model ID and its availability."
+            ) from exc
+        if status == 429:
+            raise RuntimeError(
+                "Gemini rate limit or quota was reached. Try again later."
+            ) from exc
+        raise RuntimeError(
+            f"Gemini rejected the answer request (HTTP {status or 'unknown'})."
+        ) from exc
+    except APIError as exc:
+        status = getattr(exc, "code", None)
+        logger.warning(
+            "Gemini answer request failed (model=%s, HTTP %s).",
+            target_model,
+            status or "unknown",
+        )
+        raise RuntimeError(
+            "Gemini answer generation is temporarily unavailable."
+        ) from exc
 
     if not response or not response.text:
-        raise RuntimeError(f"Gemini answer generation failed: {last_error}")
+        raise RuntimeError("Gemini returned an empty answer.")
 
     gen_duration = time.perf_counter() - t_gen_start
     logger.info("Gemini answer generation completed in %.4f seconds.", gen_duration)

@@ -671,13 +671,18 @@ function SettingsView({ onRefreshHealth }) {
         </div>
 
         <div className="settings-field">
+          <span>Provider readiness</span>
+          <code>GET /ready</code>
+        </div>
+
+        <div className="settings-field">
           <span>Document upload (up to {MAX_FILES} PDFs at a time)</span>
           <code>POST /api/documents/upload</code>
         </div>
 
         <div className="settings-field">
           <span>Question answering</span>
-          <code>POST /api/documents/&#123;document_id&#125;/answer</code>
+          <code>POST /api/documents/answer</code>
         </div>
 
         <div className="settings-field">

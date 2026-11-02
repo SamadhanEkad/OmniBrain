@@ -5,13 +5,15 @@ import math
 import time
 
 import requests
-from pinecone import Pinecone
+from pinecone import Pinecone, RetryConfig
 
 from app.config import (
     EMBEDDING_MODEL,
     OLLAMA_URL,
     PINECONE_API_KEY,
     PINECONE_INDEX_NAME,
+    PINECONE_MAX_RETRIES,
+    PINECONE_TIMEOUT_SECONDS,
     PROCESSED_DATA_DIR,
     VECTOR_SIZE,
 )
@@ -133,11 +135,7 @@ def embed_query(query: str) -> list[float]:
 # --------------------------------------------------
 
 def get_pinecone_client() -> Pinecone:
-    """
-    Connect to Pinecone and validate the index configuration.
-
-    Does not create, delete, or re-index the collection.
-    """
+    """Create a Pinecone client with bounded request timeouts and retries."""
     api_key = PINECONE_API_KEY
     if not api_key or not api_key.strip():
         raise RuntimeError(
@@ -148,57 +146,19 @@ def get_pinecone_client() -> Pinecone:
     clean_key = api_key.strip().strip("'\"").strip()
     if clean_key.startswith("<") and clean_key.endswith(">"):
         raise RuntimeError(
-            f"PINECONE_API_KEY is currently set to placeholder '{clean_key}'. "
-            "Please replace it with your actual Pinecone API key (e.g. pcsk_...)."
+            "PINECONE_API_KEY is set to a placeholder. "
+            "Set a valid Pinecone API key in the backend environment."
         )
 
-    client = Pinecone(api_key=clean_key)
-
-    try:
-        index_names = [idx.name for idx in client.list_indexes()]
-
-        if INDEX_NAME not in index_names:
-            raise ValueError(
-                f"Pinecone index '{INDEX_NAME}' does not exist. "
-                "Ensure the index is created before querying."
-            )
-
-        description = client.describe_index(INDEX_NAME)
-        existing_size = getattr(description, "dimension", None)
-        existing_metric = getattr(description, "metric", None)
-
-        if existing_size != VECTOR_SIZE:
-            raise ValueError(
-                f"Index '{INDEX_NAME}' uses {existing_size} dimensions, "
-                f"but VECTOR_SIZE is {VECTOR_SIZE}. The embedding model, "
-                "index, and configuration must agree."
-            )
-
-        if existing_metric != "cosine":
-            raise ValueError(
-                f"Index '{INDEX_NAME}' must use cosine distance; "
-                f"found {existing_metric}."
-            )
-
-        logger.info(
-            "Connected to Pinecone index '%s' "
-            "(vector size=%s, metric=%s).",
-            INDEX_NAME,
-            existing_size,
-            existing_metric,
-        )
-
-        return client
-
-    except Exception as exc:
-        if hasattr(client, "close"):
-            client.close()
-        if "UnauthorizedError" in type(exc).__name__ or "401" in str(exc) or "Invalid API key" in str(exc):
-            raise RuntimeError(
-                "Pinecone authentication failed: The provided PINECONE_API_KEY is invalid or unauthorized (HTTP 401). "
-                "Please check your Pinecone API key and ensure it is active and correctly set in your environment."
-            ) from exc
-        raise
+    return Pinecone(
+        api_key=clean_key,
+        timeout=PINECONE_TIMEOUT_SECONDS,
+        retry_config=RetryConfig(
+            max_retries=PINECONE_MAX_RETRIES,
+            backoff_factor=0.25,
+            max_wait=4.0,
+        ),
+    )
 
 
 def load_all_document_chunks(document_id: str) -> list[dict]:

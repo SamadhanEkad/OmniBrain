@@ -951,7 +951,40 @@ kbd {
 }
 
 .message-sources {
-  display: none;
+  margin-top: 12px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.message-sources > strong {
+  color: var(--text);
+}
+
+.message-sources ul {
+  display: grid;
+  gap: 5px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.message-sources details {
+  min-width: 0;
+}
+
+.message-sources summary {
+  color: var(--cyan);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.message-sources details p {
+  margin: 5px 0 3px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* ---------- Markdown answers ---------- */

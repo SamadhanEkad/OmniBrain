@@ -45,9 +45,9 @@ MAX_FILES_PER_UPLOAD = int(
     )
 )
 
-if MAX_FILES_PER_UPLOAD <= 0:
+if not 1 <= MAX_FILES_PER_UPLOAD <= 5:
     raise ValueError(
-        "MAX_FILES_PER_UPLOAD must be a positive integer."
+        "MAX_FILES_PER_UPLOAD must be between 1 and 5."
     )
 
 
@@ -59,6 +59,8 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "omnibrain-documents")
 PINECONE_CLOUD = os.getenv("PINECONE_CLOUD", "aws")
 PINECONE_REGION = os.getenv("PINECONE_REGION", "us-east-1")
+PINECONE_TIMEOUT_SECONDS = 20.0
+PINECONE_MAX_RETRIES = 2
 
 # Ollama configuration shared by document and query embedding.
 OLLAMA_URL = os.getenv(
@@ -81,7 +83,7 @@ if VECTOR_SIZE <= 0:
 # --------------------------------------------------
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip()
 
 
 # --------------------------------------------------

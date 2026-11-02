@@ -3,15 +3,20 @@ import json
 import logging
 import math
 import os
+import time
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
-from dotenv import load_dotenv
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone, RetryConfig, ServerlessSpec
 
-from app.config import EMBEDDING_MODEL, PINECONE_INDEX_NAME
-
-load_dotenv()
+from app.config import (
+    EMBEDDING_MODEL,
+    PINECONE_API_KEY,
+    PINECONE_INDEX_NAME,
+    PINECONE_MAX_RETRIES,
+    PINECONE_TIMEOUT_SECONDS,
+    VECTOR_SIZE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +26,6 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROCESSED_DIR = PROJECT_ROOT / "Data" / "processed"
-
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 
 INDEX_NAME = PINECONE_INDEX_NAME
 COLLECTION_NAME = INDEX_NAME
@@ -41,6 +44,8 @@ METADATA_FIELDS = (
     "start_char",
     "end_char",
 )
+INDEX_READY_TIMEOUT_SECONDS = 90
+INDEX_READY_POLL_SECONDS = 2
 
 
 # --------------------------------------------------
@@ -84,7 +89,7 @@ def _point_id(document_id: str, chunk_id: str) -> str:
 
 def get_pinecone_client() -> Pinecone:
     """Connect to Pinecone and verify server availability."""
-    api_key = os.getenv("PINECONE_API_KEY")
+    api_key = PINECONE_API_KEY
     if not api_key or not api_key.strip():
         raise RuntimeError(
             "PINECONE_API_KEY environment variable is not set. "
@@ -94,11 +99,19 @@ def get_pinecone_client() -> Pinecone:
     clean_key = api_key.strip().strip("'\"").strip()
     if clean_key.startswith("<") and clean_key.endswith(">"):
         raise RuntimeError(
-            f"PINECONE_API_KEY is currently set to placeholder '{clean_key}'. "
-            "Please replace it with your actual Pinecone API key (e.g. pcsk_...)."
+            "PINECONE_API_KEY is set to a placeholder. "
+            "Set a valid Pinecone API key in the backend environment."
         )
 
-    client = Pinecone(api_key=clean_key)
+    client = Pinecone(
+        api_key=clean_key,
+        timeout=PINECONE_TIMEOUT_SECONDS,
+        retry_config=RetryConfig(
+            max_retries=PINECONE_MAX_RETRIES,
+            backoff_factor=0.25,
+            max_wait=4.0,
+        ),
+    )
     return client
 
 
@@ -131,10 +144,8 @@ def ensure_index(
                 region=DEFAULT_REGION,
             ),
         )
-        print(
-            f"Created Pinecone index: {INDEX_NAME} "
-            f"({vector_size} dimensions)"
-        )
+        _wait_for_index_ready(client)
+        logger.info("Created Pinecone index '%s' (%d dimensions).", INDEX_NAME, vector_size)
         return
 
     description = client.describe_index(INDEX_NAME)
@@ -152,7 +163,28 @@ def ensure_index(
             f"The index must use cosine metric; found {existing_metric}."
         )
 
-    print(f"Using existing Pinecone index: {INDEX_NAME}")
+    logger.info("Using existing Pinecone index '%s'.", INDEX_NAME)
+
+
+def _wait_for_index_ready(client: Pinecone) -> None:
+    deadline = time.monotonic() + INDEX_READY_TIMEOUT_SECONDS
+    while True:
+        description = client.describe_index(INDEX_NAME)
+        status = getattr(description, "status", None)
+        is_ready = (
+            status.get("ready") is True
+            if isinstance(status, dict)
+            else getattr(status, "ready", False) is True
+        )
+        if is_ready:
+            return
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(
+                f"Pinecone index '{INDEX_NAME}' was not ready before the timeout."
+            )
+        time.sleep(min(INDEX_READY_POLL_SECONDS, remaining))
 
 
 # Compatibility alias
@@ -171,14 +203,9 @@ def is_document_indexed(client: Pinecone, document_id: str) -> bool:
     if INDEX_NAME not in index_names:
         return False
 
-    description = client.describe_index(INDEX_NAME)
-    dimension = getattr(description, "dimension", None)
-    if not isinstance(dimension, int) or dimension <= 0:
-        return False
-
     index = client.Index(INDEX_NAME)
     result = index.query(
-        vector=[0.1] * dimension,
+        vector=[0.1] * VECTOR_SIZE,
         filter={"document_id": {"$eq": document_id}},
         top_k=1,
         include_metadata=False,

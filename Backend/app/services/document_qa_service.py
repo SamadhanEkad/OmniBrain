@@ -55,24 +55,6 @@ _PAGE_COUNT_QUESTION = (
     "page count",
     "how many page",
 )
-_OVERVIEW_QUESTION = (
-    "summar",
-    "overview",
-    "purpose",
-    "document type",
-    "type of document",
-    "what type",
-    "what kind of document",
-    "what is this pdf",
-    "what is this document",
-    "what is the document",
-    "why was this document",
-    "why is this document",
-    "document for",
-    "what's this document",
-    "what's the document",
-)
-
 # Questions about the workspace itself (only meaningful with several PDFs).
 _WORKSPACE_QUESTION = (
     "how many pdf",
@@ -237,56 +219,6 @@ def _saved_document_answer(document_id: str, question: str) -> dict | None:
         )
         return {"answer": answer, "sources": []}
 
-    # Check overview questions
-    if any(term in normalized_question for term in _OVERVIEW_QUESTION):
-        info = ensure_document_metadata(document_id)
-        if info.get("metadata_status") == "failed":
-            return {
-                "answer": (
-                    "A document overview is unavailable because metadata "
-                    "generation failed."
-                ),
-                "sources": [],
-            }
-
-        # Check if the question asks for a custom format/answer
-        custom_markers = (
-            "in 100 words", "in 50 words", "in 200 words", "words",
-            "bullet", "points", "teach", "takeaway", "example", "simple",
-            "beginner", "step", "compare", "conclusion", "finding", "question",
-        )
-        if any(marker in normalized_question for marker in custom_markers):
-            return None
-
-        metadata = info.get("metadata")
-        if not isinstance(metadata, dict):
-            return {
-                "answer": (
-                    "A document overview is unavailable because metadata "
-                    "generation failed."
-                ),
-                "sources": [],
-            }
-
-        if any(
-            term in normalized_question
-            for term in ("purpose", "why was", "why is")
-        ) or "document for" in normalized_question:
-            field = "document_purpose"
-        elif any(
-            term in normalized_question
-            for term in ("what type", "what kind", "document type", "type of document")
-        ):
-            field = "document_type"
-        else:
-            field = "document_summary"
-
-        answer = metadata.get(field)
-        if not isinstance(answer, str) or not answer.strip():
-            answer = "The available metadata does not specify this information."
-
-        return {"answer": answer.strip(), "sources": []}
-
     return None
 
 
@@ -311,7 +243,7 @@ def ensure_document_indexed(document_id: str) -> None:
         )
 
     with _get_document_lock(document_id):
-        info = ensure_document_metadata(document_id)
+        info = load_document_info(document_id) or {}
         filename = info.get("filename")
         client = get_pinecone_client()
 
@@ -422,48 +354,17 @@ def classify_question(question: str) -> str:
     return "specific_content"
 
 
-def _gather_overview_chunks(document_id: str, all_chunks: list[dict], metadata: dict | None) -> list[dict]:
+def _gather_overview_chunks(all_chunks: list[dict]) -> list[dict]:
     """Gather multi-section representative context for document-level understanding."""
     if all_chunks and len(all_chunks) <= 15:
         return all_chunks
 
-    selected = []
-    seen_ids = set()
-
-    # Prepend document metadata summary if available
-    if isinstance(metadata, dict):
-        summary_text = metadata.get("document_summary", "")
-        if summary_text:
-            selected.append({
-                "document_id": document_id,
-                "chunk_id": "doc_summary",
-                "page_number": 1,
-                "text": f"Document Summary: {summary_text}",
-            })
-
-    # Add opening chunks (page 1, 2)
-    for c in all_chunks:
-        p = c.get("page_number", 1)
-        cid = c.get("chunk_id")
-        if p in (1, 2) and cid not in seen_ids:
-            selected.append(c)
-            seen_ids.add(cid)
-            if len(selected) >= 5:
-                break
-
-    # Add ending chunks (conclusion/findings)
-    if all_chunks:
-        last_pages = {all_chunks[-1].get("page_number", 1)}
-        for c in reversed(all_chunks):
-            p = c.get("page_number", 1)
-            cid = c.get("chunk_id")
-            if p in last_pages and cid not in seen_ids:
-                selected.append(c)
-                seen_ids.add(cid)
-                if len(selected) >= 8:
-                    break
-
-    return selected or all_chunks[:6]
+    sample_count = min(8, len(all_chunks))
+    sample_indexes = {
+        round(index * (len(all_chunks) - 1) / (sample_count - 1))
+        for index in range(sample_count)
+    }
+    return [all_chunks[index] for index in sorted(sample_indexes)]
 
 
 _SECTION_PATTERNS = {
@@ -666,7 +567,6 @@ def answer_document_question(
     requested_section = detect_requested_section(clean_question)
     all_chunks = load_all_document_chunks(document_id)
     doc_info = load_document_info(document_id) or {}
-    metadata = doc_info.get("metadata")
     filenames = {document_id: doc_info.get("filename")}
 
     retrieved_chunks: list[dict] = []
@@ -694,7 +594,7 @@ def answer_document_question(
 
     # Route: Document-level overview (100-word summaries, teachings, takeaways, conclusions)
     elif category == "document_overview":
-        retrieved_chunks = _gather_overview_chunks(document_id, all_chunks, metadata)
+        retrieved_chunks = _gather_overview_chunks(all_chunks)
 
     # Route: Author or Title
     elif category in ("author", "title"):
@@ -704,30 +604,17 @@ def answer_document_question(
             page1_chunks = all_chunks[:3]
 
         retrieved_chunks = page1_chunks
-        # Also enrich with any metadata
-        if not retrieved_chunks and metadata:
-            meta_snippet = f"Title: {metadata.get('document_title', 'Unknown')}. Author: {metadata.get('author', 'Not specified')}."
-            retrieved_chunks = [{
-                "document_id": document_id,
-                "chunk_id": "meta_header",
-                "page_number": 1,
-                "text": meta_snippet,
-            }]
 
     # Route: Simple explanation or Comparison/Table
     elif category in ("simple_explanation", "comparison_table"):
         if all_chunks and len(all_chunks) <= 15:
             retrieved_chunks = all_chunks
         else:
-            try:
-                retrieved_chunks = search_documents(
-                    query=clean_question,
-                    document_id=document_id,
-                    top_k=max(top_k, 7),
-                )
-            except Exception as exc:
-                logger.warning("Pinecone search failed for route %s: %s", category, exc)
-                retrieved_chunks = all_chunks[:7]
+            retrieved_chunks = search_documents(
+                query=clean_question,
+                document_id=document_id,
+                top_k=max(top_k, 7),
+            )
 
     # Route: Specific content query
     else:
@@ -954,10 +841,7 @@ def _answer_across_documents(
         # A few representative chunks from EACH PDF.
         for doc_id in ids:
             chunks = load_all_document_chunks(doc_id)
-            info = load_document_info(doc_id) or {}
-            retrieved.extend(
-                _gather_overview_chunks(doc_id, chunks, info.get("metadata"))[:4]
-            )
+            retrieved.extend(_gather_overview_chunks(chunks)[:4])
 
     elif category in ("author", "title"):
         # Opening pages of each PDF hold the title and authors.
@@ -968,20 +852,12 @@ def _answer_across_documents(
 
     else:
         k = min(max(top_k, 6), MAX_TOP_K)
-        try:
-            retrieved = search_documents(
-                query=question,
-                document_ids=ids,
-                top_k=k,
-                per_document=wants_every_doc,
-            )
-        except Exception as exc:
-            logger.warning("Multi-document search failed: %s", exc)
-            retrieved = []
-
-        if not retrieved:
-            for doc_id in ids:
-                retrieved.extend(load_all_document_chunks(doc_id)[:2])
+        retrieved = search_documents(
+            query=question,
+            document_ids=ids,
+            top_k=k,
+            per_document=wants_every_doc,
+        )
 
     if not retrieved:
         return {
@@ -1050,7 +926,7 @@ def answer_documents_question(
         raise FileNotFoundError("No PDFs have been uploaded yet.")
 
     selected = _select_documents(workspace, document_ids)
-    mentioned = _detect_mentioned_documents(clean_question, workspace)
+    mentioned = _detect_mentioned_documents(clean_question, selected)
     docs = mentioned or selected
 
     if len(docs) == 1:

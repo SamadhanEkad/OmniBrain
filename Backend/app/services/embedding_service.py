@@ -1,5 +1,6 @@
 
 import json
+import logging
 import math
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ from app.config import (
 
 MODEL_NAME = EMBEDDING_MODEL
 OLLAMA_CLIENT = ollama.Client(host=OLLAMA_URL, timeout=120)
+EMBEDDING_BATCH_SIZE = 32
 
 # Nomic model input limit is 512 tokens.
 # Keep a safety margin because our tokenizer is approximate.
@@ -35,6 +37,7 @@ METADATA_FIELDS = (
     "key_concepts",
     "summary",
 )
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------
@@ -107,12 +110,9 @@ def generate_embeddings(
 
     source_data, chunks = load_chunks(document_id)
 
-    embedded_chunks = []
-    embedding_dimension = None
-
+    prepared_chunks = []
+    embedding_inputs = []
     for index, chunk in enumerate(chunks, start=1):
-
-        # Validate chunk structure.
         if not isinstance(chunk, dict):
             raise ValueError(
                 f"Chunk {index} must be a JSON object."
@@ -160,88 +160,88 @@ def generate_embeddings(
                     "regenerate the chunks."
                 )
 
-        # Nomic document embedding prefix.
-        embedding_input = f"search_document: {text.strip()}"
-
-        # Request an embedding from Ollama.
-        try:
-            response = OLLAMA_CLIENT.embed(
-                model=MODEL_NAME,
-                input=embedding_input,
-            )
-
-        except Exception as exc:
-            raise RuntimeError(
-                f"Embedding failed for chunk {chunk_id}. "
-                f"Check Ollama and confirm that model "
-                f"'{MODEL_NAME}' is installed."
-            ) from exc
-
-        vectors = response.embeddings
-
-        if not vectors or not vectors[0]:
-            raise ValueError(
-                f"Model returned an empty vector for {chunk_id}."
-            )
-
-        vector = vectors[0]
-
-        if len(vector) != VECTOR_SIZE:
-            raise ValueError(
-                f"Expected {VECTOR_SIZE} embedding dimensions for "
-                f"chunk {chunk_id}, but Ollama returned {len(vector)}."
-            )
-
-        # Validate numerical values.
-        if not all(
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and math.isfinite(value)
-            for value in vector
-        ):
-            raise ValueError(
-                f"Invalid numerical values in {chunk_id}."
-            )
-
-        # Ensure that all chunks use the same vector dimension.
-        if embedding_dimension is None:
-            embedding_dimension = len(vector)
-
-        elif len(vector) != embedding_dimension:
-            raise ValueError(
-                "Inconsistent embedding dimensions detected."
-            )
-
-        # Preserve the existing fields.
-        embedded_chunk = {
+        clean_text = text.strip()
+        prepared_chunks.append({
             "document_id": chunk_document_id,
-            "chunk_id": chunk_id,
+            "chunk_id": str(chunk_id),
             "page_number": chunk.get("page_number"),
-            "text": text.strip(),
+            "text": clean_text,
             "token_count": token_count,
+            "metadata": {
+                field: chunk[field]
+                for field in METADATA_FIELDS
+                if chunk.get(field) is not None
+            },
+        })
+        embedding_inputs.append(f"search_document: {clean_text}")
+
+    vectors = _load_cached_vectors(document_id, prepared_chunks)
+    if vectors is None:
+        vectors = []
+        for start in range(0, len(prepared_chunks), EMBEDDING_BATCH_SIZE):
+            batch = prepared_chunks[start : start + EMBEDDING_BATCH_SIZE]
+            try:
+                response = OLLAMA_CLIENT.embed(
+                    model=MODEL_NAME,
+                    input=embedding_inputs[start : start + EMBEDDING_BATCH_SIZE],
+                )
+            except Exception as exc:
+                first_chunk_id = batch[0]["chunk_id"]
+                raise RuntimeError(
+                    f"Embedding failed for batch starting at {first_chunk_id}. "
+                    "Check Ollama connectivity and the configured embedding model."
+                ) from exc
+
+            batch_vectors = response.embeddings
+            if len(batch_vectors) != len(batch):
+                raise ValueError(
+                    "The embedding model returned a different number of "
+                    "vectors than the submitted batch."
+                )
+
+            for chunk, vector in zip(batch, batch_vectors, strict=True):
+                if not isinstance(vector, list) or not vector:
+                    raise ValueError(
+                        f"Model returned an empty vector for {chunk['chunk_id']}."
+                    )
+                if len(vector) != VECTOR_SIZE:
+                    raise ValueError(
+                        f"Expected {VECTOR_SIZE} embedding dimensions for "
+                        f"chunk {chunk['chunk_id']}, but Ollama returned "
+                        f"{len(vector)}."
+                    )
+                if not all(
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                    for value in vector
+                ):
+                    raise ValueError(
+                        f"Invalid numerical values in {chunk['chunk_id']}."
+                    )
+                vectors.append(vector)
+    else:
+        logger.info("Reusing cached embeddings for document %s.", document_id)
+
+    embedded_chunks = []
+    for chunk, vector in zip(prepared_chunks, vectors, strict=True):
+        embedded_chunk = {
+            "document_id": chunk["document_id"],
+            "chunk_id": chunk["chunk_id"],
+            "page_number": chunk["page_number"],
+            "text": chunk["text"],
+            "token_count": chunk["token_count"],
             "embedding": vector,
+            **chunk["metadata"],
         }
-
-        # Preserve optional metadata added by the chunking pipeline.
-        for field in METADATA_FIELDS:
-            value = chunk.get(field)
-
-            if value is not None:
-                embedded_chunk[field] = value
-
         embedded_chunks.append(embedded_chunk)
-
-        print(
-            f"Embedded chunk {index}/{len(chunks)} "
-            f"({chunk_id})"
-        )
 
     # Prepare the complete embedding result.
     result = {
         "document_id": document_id,
         "source_file": source_data.get("source_file"),
         "model": MODEL_NAME,
-        "embedding_dimension": embedding_dimension,
+        "embedding_dimension": VECTOR_SIZE,
         "chunk_count": len(embedded_chunks),
         "chunks": embedded_chunks,
     }
@@ -281,14 +281,62 @@ def generate_embeddings(
             if temporary_path.exists():
                 temporary_path.unlink()
 
-        print(f"\nEmbeddings saved to: {output_path}")
-
-    print("\nEmbedding generation completed.")
-    print(f"Document ID: {document_id}")
-    print(f"Chunks embedded: {len(embedded_chunks)}")
-    print(f"Vector dimensions: {embedding_dimension}")
+        logger.info("Saved %d embeddings for document %s.", len(embedded_chunks), document_id)
 
     return result
+
+
+def _load_cached_vectors(
+    document_id: str,
+    chunks: list[dict],
+) -> list[list[float]] | None:
+    """Reuse a cache only when it exactly matches the current model and text."""
+    cache_path = PROCESSED_DIR / f"{document_id}_embeddings.json"
+    if not cache_path.is_file():
+        return None
+
+    try:
+        with cache_path.open("r", encoding="utf-8") as file:
+            cached = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Ignoring unreadable embedding cache for %s.", document_id)
+        return None
+
+    cached_chunks = cached.get("chunks") if isinstance(cached, dict) else None
+    if (
+        not isinstance(cached, dict)
+        or cached.get("document_id") != document_id
+        or cached.get("model") != MODEL_NAME
+        or cached.get("embedding_dimension") != VECTOR_SIZE
+        or not isinstance(cached_chunks, list)
+        or len(cached_chunks) != len(chunks)
+    ):
+        return None
+
+    vectors = []
+    for current, previous in zip(chunks, cached_chunks, strict=True):
+        if (
+            not isinstance(previous, dict)
+            or previous.get("chunk_id") != current["chunk_id"]
+            or previous.get("text") != current["text"]
+        ):
+            return None
+
+        vector = previous.get("embedding")
+        if (
+            not isinstance(vector, list)
+            or len(vector) != VECTOR_SIZE
+            or not all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                for value in vector
+            )
+        ):
+            return None
+        vectors.append(vector)
+
+    return vectors
 
 
 # --------------------------------------------------
