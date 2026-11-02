@@ -6,21 +6,28 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import ollama
+import httpx
+from google.genai import types
+from google.genai.errors import APIError
 
 from app.config import (
+    EMBEDDING_FINGERPRINT,
     EMBEDDING_MODEL,
+    EMBEDDING_PROVIDER,
+    GEMINI_API_KEY,
     OLLAMA_URL,
     PROCESSED_DATA_DIR,
     VECTOR_SIZE,
 )
+from app.services.gemini_client import get_gemini_client
 
 # --------------------------------------------------
 # 1. Configuration
 # --------------------------------------------------
 
 MODEL_NAME = EMBEDDING_MODEL
-OLLAMA_CLIENT = ollama.Client(host=OLLAMA_URL, timeout=120)
+MODEL_FINGERPRINT = EMBEDDING_FINGERPRINT
+OLLAMA_CLIENT: Any | None = None
 EMBEDDING_BATCH_SIZE = 32
 
 # Nomic model input limit is 512 tokens.
@@ -38,6 +45,146 @@ METADATA_FIELDS = (
     "summary",
 )
 logger = logging.getLogger(__name__)
+
+RETRIEVAL_DOCUMENT = "RETRIEVAL_DOCUMENT"
+RETRIEVAL_QUERY = "RETRIEVAL_QUERY"
+
+
+def _get_ollama_client() -> Any:
+    global OLLAMA_CLIENT
+    if OLLAMA_CLIENT is None:
+        import ollama
+
+        OLLAMA_CLIENT = ollama.Client(host=OLLAMA_URL, timeout=120)
+    return OLLAMA_CLIENT
+
+
+class EmbeddingProviderError(RuntimeError):
+    """Raised when the configured embedding service cannot create vectors."""
+
+
+class EmbeddingConfigurationError(RuntimeError):
+    """Raised when the embedding provider or model is not configured."""
+
+
+class EmbeddingAuthenticationError(EmbeddingProviderError):
+    """Raised when the embedding provider rejects its credentials."""
+
+
+class EmbeddingModelError(EmbeddingProviderError):
+    """Raised when the configured embedding model is unavailable."""
+
+
+class EmbeddingQuotaError(EmbeddingProviderError):
+    """Raised when the embedding provider rate limit or quota is reached."""
+
+
+class EmbeddingTimeoutError(EmbeddingProviderError):
+    """Raised when the embedding provider times out."""
+
+
+class EmbeddingUnavailableError(EmbeddingProviderError):
+    """Raised when the embedding provider cannot be reached."""
+
+
+def embed_texts(texts: list[str], task_type: str) -> list[list[float]]:
+    """Embed text with the configured provider and validate vector dimensions."""
+    if not texts or any(not isinstance(text, str) or not text.strip() for text in texts):
+        raise ValueError("Embedding inputs must be non-empty strings.")
+    if task_type not in {RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY}:
+        raise ValueError("Unsupported embedding task type.")
+    if not MODEL_NAME:
+        raise EmbeddingConfigurationError("EMBEDDING_MODEL is not configured.")
+    if EMBEDDING_PROVIDER == "gemini" and not GEMINI_API_KEY:
+        raise EmbeddingConfigurationError(
+            "GEMINI_API_KEY is required for Gemini embeddings."
+        )
+
+    try:
+        if EMBEDDING_PROVIDER == "gemini":
+            response = get_gemini_client().models.embed_content(
+                model=MODEL_NAME,
+                contents=texts,
+                config=types.EmbedContentConfig(
+                    task_type=task_type,
+                    output_dimensionality=VECTOR_SIZE,
+                ),
+            )
+            vectors = [
+                embedding.values
+                for embedding in (response.embeddings or [])
+                if embedding is not None
+            ]
+        elif EMBEDDING_PROVIDER == "ollama":
+            prefix = (
+                "search_document: "
+                if task_type == RETRIEVAL_DOCUMENT
+                else "search_query: "
+            )
+            response = _get_ollama_client().embed(
+                model=MODEL_NAME,
+                input=[prefix + text.strip() for text in texts],
+            )
+            vectors = response.embeddings
+        else:
+            raise ValueError("Unsupported embedding provider configuration.")
+    except APIError as exc:
+        status = getattr(exc, "code", None)
+        if status in (401, 403):
+            raise EmbeddingAuthenticationError(
+                "Embedding provider authentication failed. Verify GEMINI_API_KEY."
+            ) from exc
+        if status == 404:
+            raise EmbeddingModelError(
+                "The configured embedding model is unavailable."
+            ) from exc
+        if status == 429:
+            raise EmbeddingQuotaError(
+                "Embedding provider quota or rate limit was reached."
+            ) from exc
+        if status in (408, 504):
+            raise EmbeddingTimeoutError(
+                "Embedding provider did not respond before the request timeout."
+            ) from exc
+        raise EmbeddingProviderError(
+            "The configured embedding provider rejected the request."
+        ) from exc
+    except httpx.TimeoutException as exc:
+        raise EmbeddingTimeoutError(
+            "Embedding provider did not respond before the request timeout."
+        ) from exc
+    except httpx.RequestError as exc:
+        raise EmbeddingUnavailableError(
+            "The configured embedding provider could not be reached."
+        ) from exc
+    except Exception as exc:
+        raise EmbeddingProviderError(
+            f"The configured {EMBEDDING_PROVIDER} embedding provider failed."
+        ) from exc
+
+    if len(vectors) != len(texts):
+        raise EmbeddingProviderError(
+            "The embedding provider returned a different number of vectors "
+            "than the number of submitted inputs."
+        )
+
+    for vector in vectors:
+        if (
+            not isinstance(vector, list)
+            or len(vector) != VECTOR_SIZE
+            or not all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                for value in vector
+            )
+        ):
+            raise EmbeddingProviderError(
+                f"The embedding provider must return finite vectors with "
+                f"exactly {VECTOR_SIZE} dimensions."
+            )
+
+    return vectors
 
 
 # --------------------------------------------------
@@ -111,7 +258,6 @@ def generate_embeddings(
     source_data, chunks = load_chunks(document_id)
 
     prepared_chunks = []
-    embedding_inputs = []
     for index, chunk in enumerate(chunks, start=1):
         if not isinstance(chunk, dict):
             raise ValueError(
@@ -173,52 +319,17 @@ def generate_embeddings(
                 if chunk.get(field) is not None
             },
         })
-        embedding_inputs.append(f"search_document: {clean_text}")
-
     vectors = _load_cached_vectors(document_id, prepared_chunks)
     if vectors is None:
         vectors = []
         for start in range(0, len(prepared_chunks), EMBEDDING_BATCH_SIZE):
             batch = prepared_chunks[start : start + EMBEDDING_BATCH_SIZE]
-            try:
-                response = OLLAMA_CLIENT.embed(
-                    model=MODEL_NAME,
-                    input=embedding_inputs[start : start + EMBEDDING_BATCH_SIZE],
-                )
-            except Exception as exc:
-                first_chunk_id = batch[0]["chunk_id"]
-                raise RuntimeError(
-                    f"Embedding failed for batch starting at {first_chunk_id}. "
-                    "Check Ollama connectivity and the configured embedding model."
-                ) from exc
-
-            batch_vectors = response.embeddings
-            if len(batch_vectors) != len(batch):
-                raise ValueError(
-                    "The embedding model returned a different number of "
-                    "vectors than the submitted batch."
-                )
+            batch_vectors = embed_texts(
+                [chunk["text"] for chunk in batch],
+                RETRIEVAL_DOCUMENT,
+            )
 
             for chunk, vector in zip(batch, batch_vectors, strict=True):
-                if not isinstance(vector, list) or not vector:
-                    raise ValueError(
-                        f"Model returned an empty vector for {chunk['chunk_id']}."
-                    )
-                if len(vector) != VECTOR_SIZE:
-                    raise ValueError(
-                        f"Expected {VECTOR_SIZE} embedding dimensions for "
-                        f"chunk {chunk['chunk_id']}, but Ollama returned "
-                        f"{len(vector)}."
-                    )
-                if not all(
-                    isinstance(value, (int, float))
-                    and not isinstance(value, bool)
-                    and math.isfinite(value)
-                    for value in vector
-                ):
-                    raise ValueError(
-                        f"Invalid numerical values in {chunk['chunk_id']}."
-                    )
                 vectors.append(vector)
     else:
         logger.info("Reusing cached embeddings for document %s.", document_id)
@@ -240,7 +351,8 @@ def generate_embeddings(
     result = {
         "document_id": document_id,
         "source_file": source_data.get("source_file"),
-        "model": MODEL_NAME,
+        "model": MODEL_FINGERPRINT,
+        "embedding_model": MODEL_FINGERPRINT,
         "embedding_dimension": VECTOR_SIZE,
         "chunk_count": len(embedded_chunks),
         "chunks": embedded_chunks,
@@ -306,7 +418,7 @@ def _load_cached_vectors(
     if (
         not isinstance(cached, dict)
         or cached.get("document_id") != document_id
-        or cached.get("model") != MODEL_NAME
+        or cached.get("model") != MODEL_FINGERPRINT
         or cached.get("embedding_dimension") != VECTOR_SIZE
         or not isinstance(cached_chunks, list)
         or len(cached_chunks) != len(chunks)

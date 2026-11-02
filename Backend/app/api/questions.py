@@ -19,6 +19,16 @@ from app.services.answer_generator import (
     GeminiTimeoutError,
     GeminiUnavailableError,
 )
+from app.services.embedding_service import (
+    EmbeddingAuthenticationError,
+    EmbeddingConfigurationError,
+    EmbeddingModelError,
+    EmbeddingProviderError,
+    EmbeddingQuotaError,
+    EmbeddingTimeoutError,
+    EmbeddingUnavailableError,
+)
+from app.services.vector_store import PineconeConfigurationError
 
 router = APIRouter(
     prefix="/api/documents",
@@ -27,8 +37,8 @@ router = APIRouter(
 logger = logging.getLogger(__name__)
 
 
-def _log_answer_failure(context: str, exc: Exception) -> None:
-    """Log the traceback for operators while redacting configured API keys."""
+def log_redacted_traceback(context: str, exc: Exception) -> None:
+    """Log an exception traceback while redacting configured service secrets."""
     formatted_traceback = "".join(
         traceback.format_exception(type(exc), exc, exc.__traceback__)
     )
@@ -78,26 +88,97 @@ def answer_question(document_id: UUID, request: QuestionRequest):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except GeminiAuthenticationError as exc:
-        _log_answer_failure("Gemini authentication failed during document Q&A.", exc)
+        log_redacted_traceback("Gemini authentication failed during document Q&A.", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except GeminiModelError as exc:
-        _log_answer_failure("Configured Gemini model is unavailable.", exc)
+        log_redacted_traceback("Configured Gemini model is unavailable.", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except GeminiQuotaError as exc:
-        _log_answer_failure("Gemini quota/rate limit reached during document Q&A.", exc)
+        log_redacted_traceback("Gemini quota/rate limit reached during document Q&A.", exc)
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except GeminiTimeoutError as exc:
-        _log_answer_failure("Gemini timed out during document Q&A.", exc)
+        log_redacted_traceback("Gemini timed out during document Q&A.", exc)
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except GeminiUnavailableError as exc:
-        _log_answer_failure("Gemini is unavailable during document Q&A.", exc)
+        log_redacted_traceback("Gemini is unavailable during document Q&A.", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except EmbeddingAuthenticationError as exc:
+        log_redacted_traceback(
+            "Embedding provider authentication failed during document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding provider authentication failed.",
+        ) from exc
+    except EmbeddingModelError as exc:
+        log_redacted_traceback(
+            "Embedding model is unavailable during document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="The configured embedding model is unavailable.",
+        ) from exc
+    except EmbeddingQuotaError as exc:
+        log_redacted_traceback(
+            "Embedding provider quota reached during document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="The embedding provider rate limit or quota was reached.",
+        ) from exc
+    except EmbeddingTimeoutError as exc:
+        log_redacted_traceback(
+            "Embedding provider timed out during document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=504,
+            detail="The embedding provider timed out.",
+        ) from exc
+    except EmbeddingUnavailableError as exc:
+        log_redacted_traceback(
+            "Embedding provider is unreachable during document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="The embedding provider is temporarily unavailable.",
+        ) from exc
+    except EmbeddingProviderError as exc:
+        log_redacted_traceback("Embedding provider failed during document Q&A.", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Document embeddings are temporarily unavailable.",
+        ) from exc
+    except EmbeddingConfigurationError as exc:
+        log_redacted_traceback(
+            "Embedding provider is not configured for document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Document embeddings are not configured correctly.",
+        ) from exc
+    except PineconeConfigurationError as exc:
+        log_redacted_traceback("Pinecone is not configured for document Q&A.", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="The vector database is not configured correctly.",
+        ) from exc
+    except PineconeException as exc:
+        log_redacted_traceback("Pinecone failed during document Q&A.", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="The vector database is temporarily unavailable.",
+        ) from exc
     except (
         requests.exceptions.RequestException,
         RuntimeError,
-        PineconeException,
     ) as exc:
-        _log_answer_failure("Document question request failed.", exc)
+        log_redacted_traceback("Document question request failed.", exc)
         raise HTTPException(
             status_code=503,
             detail=(
@@ -106,7 +187,7 @@ def answer_question(document_id: UUID, request: QuestionRequest):
             ),
         ) from exc
     except Exception as exc:
-        _log_answer_failure("Unexpected document question failure.", exc)
+        log_redacted_traceback("Unexpected document question failure.", exc)
         raise HTTPException(
             status_code=500,
             detail="An unexpected error occurred while answering the question.",
@@ -134,26 +215,103 @@ def answer_selected_documents(request: MultiDocumentQuestionRequest):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except GeminiAuthenticationError as exc:
-        _log_answer_failure("Gemini authentication failed during multi-document Q&A.", exc)
+        log_redacted_traceback("Gemini authentication failed during multi-document Q&A.", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except GeminiModelError as exc:
-        _log_answer_failure("Configured Gemini model is unavailable.", exc)
+        log_redacted_traceback("Configured Gemini model is unavailable.", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except GeminiQuotaError as exc:
-        _log_answer_failure("Gemini quota/rate limit reached during multi-document Q&A.", exc)
+        log_redacted_traceback("Gemini quota/rate limit reached during multi-document Q&A.", exc)
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except GeminiTimeoutError as exc:
-        _log_answer_failure("Gemini timed out during multi-document Q&A.", exc)
+        log_redacted_traceback("Gemini timed out during multi-document Q&A.", exc)
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except GeminiUnavailableError as exc:
-        _log_answer_failure("Gemini is unavailable during multi-document Q&A.", exc)
+        log_redacted_traceback("Gemini is unavailable during multi-document Q&A.", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except EmbeddingAuthenticationError as exc:
+        log_redacted_traceback(
+            "Embedding provider authentication failed during multi-document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding provider authentication failed.",
+        ) from exc
+    except EmbeddingModelError as exc:
+        log_redacted_traceback(
+            "Embedding model is unavailable during multi-document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="The configured embedding model is unavailable.",
+        ) from exc
+    except EmbeddingQuotaError as exc:
+        log_redacted_traceback(
+            "Embedding provider quota reached during multi-document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="The embedding provider rate limit or quota was reached.",
+        ) from exc
+    except EmbeddingTimeoutError as exc:
+        log_redacted_traceback(
+            "Embedding provider timed out during multi-document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=504,
+            detail="The embedding provider timed out.",
+        ) from exc
+    except EmbeddingUnavailableError as exc:
+        log_redacted_traceback(
+            "Embedding provider is unreachable during multi-document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="The embedding provider is temporarily unavailable.",
+        ) from exc
+    except EmbeddingProviderError as exc:
+        log_redacted_traceback(
+            "Embedding provider failed during multi-document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Document embeddings are temporarily unavailable.",
+        ) from exc
+    except EmbeddingConfigurationError as exc:
+        log_redacted_traceback(
+            "Embedding provider is not configured for multi-document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Document embeddings are not configured correctly.",
+        ) from exc
+    except PineconeConfigurationError as exc:
+        log_redacted_traceback(
+            "Pinecone is not configured for multi-document Q&A.",
+            exc,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="The vector database is not configured correctly.",
+        ) from exc
+    except PineconeException as exc:
+        log_redacted_traceback("Pinecone failed during multi-document Q&A.", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="The vector database is temporarily unavailable.",
+        ) from exc
     except (
         requests.exceptions.RequestException,
         RuntimeError,
-        PineconeException,
     ) as exc:
-        _log_answer_failure("Multi-document question request failed.", exc)
+        log_redacted_traceback("Multi-document question request failed.", exc)
         raise HTTPException(
             status_code=503,
             detail=(
@@ -162,7 +320,7 @@ def answer_selected_documents(request: MultiDocumentQuestionRequest):
             ),
         ) from exc
     except Exception as exc:
-        _log_answer_failure("Unexpected multi-document question failure.", exc)
+        log_redacted_traceback("Unexpected multi-document question failure.", exc)
         raise HTTPException(
             status_code=500,
             detail="An unexpected error occurred while answering the question.",

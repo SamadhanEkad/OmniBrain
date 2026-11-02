@@ -2,24 +2,36 @@ from contextlib import asynccontextmanager
 import logging
 import os
 
-import requests
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from google.genai.errors import APIError
 
-from app.api.questions import router as questions_router
+from app.api.questions import (
+    log_redacted_traceback,
+    router as questions_router,
+)
 from app.api.upload import router as upload_router
 from app.config import (
     EMBEDDING_MODEL,
+    EMBEDDING_PROVIDER,
     GEMINI_API_KEY,
     GEMINI_MODEL,
-    OLLAMA_URL,
     PINECONE_API_KEY,
     PINECONE_INDEX_NAME,
     VECTOR_SIZE,
 )
 from app.services.answer_generator import get_gemini_client
-from app.services.retrieval_service import get_pinecone_client
+from app.services.embedding_service import (
+    EmbeddingAuthenticationError,
+    EmbeddingConfigurationError,
+    EmbeddingModelError,
+    EmbeddingQuotaError,
+    EmbeddingTimeoutError,
+    EmbeddingUnavailableError,
+    RETRIEVAL_QUERY,
+    embed_texts,
+)
+from app.services.vector_store import get_pinecone_client
 
 
 # --------------------------------------------------
@@ -132,8 +144,8 @@ def health_check():
     """
     Confirm that the FastAPI application is responding.
 
-    This checks the API process only. It does not verify that
-    Ollama, Pinecone, or document indexing is working.
+    This checks the API process only; /ready checks the configured
+    providers and vector index.
     """
 
     return {
@@ -150,31 +162,38 @@ def readiness_check(response: Response):
 
     if not GEMINI_API_KEY or not GEMINI_API_KEY.strip():
         checks["gemini"] = "not_configured"
+        logger.error("Gemini readiness failed: GEMINI_API_KEY is not configured.")
     elif not GEMINI_MODEL:
         checks["gemini"] = "model_not_configured"
+        logger.error("Gemini readiness failed: GEMINI_MODEL is not configured.")
     else:
         try:
             get_gemini_client().models.get(model=GEMINI_MODEL)
             checks["gemini"] = "ready"
         except APIError as exc:
-            checks["gemini"] = (
-                "authentication_failed"
-                if getattr(exc, "code", None) in (401, 403)
-                else "unavailable"
-            )
-            logger.warning(
-                "Gemini readiness check failed (HTTP %s).",
-                getattr(exc, "code", "unknown"),
+            status = getattr(exc, "code", None)
+            if status in (401, 403):
+                checks["gemini"] = "authentication_failed"
+            elif status == 404:
+                checks["gemini"] = "model_unavailable"
+            elif status == 429:
+                checks["gemini"] = "quota_exceeded"
+            else:
+                checks["gemini"] = "unavailable"
+            log_redacted_traceback(
+                f"Gemini readiness check failed (HTTP {status or 'unknown'}).",
+                exc,
             )
         except Exception as exc:
             checks["gemini"] = "unavailable"
-            logger.warning(
-                "Gemini readiness check failed (%s).",
-                type(exc).__name__,
+            log_redacted_traceback(
+                f"Gemini readiness check failed ({type(exc).__name__}).",
+                exc,
             )
 
     if not PINECONE_API_KEY or not PINECONE_API_KEY.strip():
         checks["pinecone"] = "not_configured"
+        logger.error("Pinecone readiness failed: PINECONE_API_KEY is not configured.")
     else:
         client = None
         try:
@@ -182,6 +201,10 @@ def readiness_check(response: Response):
             index_names = [index.name for index in client.list_indexes()]
             if PINECONE_INDEX_NAME not in index_names:
                 checks["pinecone"] = "index_unavailable"
+                logger.error(
+                    "Pinecone readiness failed: index '%s' was not found.",
+                    PINECONE_INDEX_NAME,
+                )
             else:
                 description = client.describe_index(PINECONE_INDEX_NAME)
                 checks["pinecone"] = (
@@ -190,6 +213,13 @@ def readiness_check(response: Response):
                     and getattr(description, "metric", None) == "cosine"
                     else "index_misconfigured"
                 )
+                if checks["pinecone"] == "index_misconfigured":
+                    logger.error(
+                        "Pinecone readiness failed: index '%s' must have "
+                        "dimension %d and cosine metric.",
+                        PINECONE_INDEX_NAME,
+                        VECTOR_SIZE,
+                    )
         except Exception as exc:
             checks["pinecone"] = (
                 "authentication_failed"
@@ -197,32 +227,60 @@ def readiness_check(response: Response):
                 or "unauthorized" in type(exc).__name__.casefold()
                 else "unavailable"
             )
-            logger.warning(
-                "Pinecone readiness check failed (%s).",
-                type(exc).__name__,
+            log_redacted_traceback(
+                f"Pinecone readiness check failed ({type(exc).__name__}).",
+                exc,
             )
         finally:
             if client is not None and hasattr(client, "close"):
                 client.close()
 
     try:
-        ollama_response = requests.get(
-            f"{OLLAMA_URL}/api/tags",
-            timeout=(3, 8),
+        if not EMBEDDING_MODEL or (
+            EMBEDDING_PROVIDER == "gemini"
+            and (not GEMINI_API_KEY or not GEMINI_API_KEY.strip())
+        ):
+            checks["embedding"] = "not_configured"
+            logger.error(
+                "Embedding readiness failed: model or credentials are not configured."
+            )
+        else:
+            vectors = embed_texts(
+                ["OmniBrain readiness probe."],
+                RETRIEVAL_QUERY,
+            )
+            checks["embedding"] = (
+                "ready"
+                if len(vectors) == 1 and len(vectors[0]) == VECTOR_SIZE
+                else "dimension_mismatch"
+            )
+    except EmbeddingConfigurationError as exc:
+        checks["embedding"] = "not_configured"
+        logger.error("Embedding readiness failed: %s", exc)
+    except EmbeddingAuthenticationError as exc:
+        checks["embedding"] = "authentication_failed"
+        log_redacted_traceback("Embedding readiness authentication failed.", exc)
+    except EmbeddingModelError as exc:
+        checks["embedding"] = "model_unavailable"
+        log_redacted_traceback("Embedding readiness model check failed.", exc)
+    except EmbeddingQuotaError as exc:
+        checks["embedding"] = "quota_exceeded"
+        log_redacted_traceback("Embedding readiness quota check failed.", exc)
+    except EmbeddingTimeoutError as exc:
+        checks["embedding"] = "timeout"
+        log_redacted_traceback("Embedding readiness timed out.", exc)
+    except EmbeddingUnavailableError as exc:
+        checks["embedding"] = "unavailable"
+        log_redacted_traceback("Embedding provider is unreachable.", exc)
+    except Exception as exc:
+        checks["embedding"] = "unavailable"
+        log_redacted_traceback(
+            (
+                f"{EMBEDDING_PROVIDER} embedding readiness check failed "
+                f"({type(exc).__name__})."
+            ),
+            exc,
         )
-        ollama_response.raise_for_status()
-        models = ollama_response.json().get("models", [])
-        model_names = {
-            model["name"].split(":")[0]
-            for model in models
-            if isinstance(model, dict)
-            and isinstance(model.get("name"), str)
-        }
-        checks["ollama"] = (
-            "ready" if EMBEDDING_MODEL in model_names else "model_unavailable"
-        )
-    except (requests.exceptions.RequestException, ValueError, AttributeError):
-        checks["ollama"] = "unavailable"
 
     is_ready = all(status == "ready" for status in checks.values())
     response.status_code = 200 if is_ready else 503

@@ -10,7 +10,7 @@ from uuid import NAMESPACE_URL, uuid5
 from pinecone import Pinecone, RetryConfig, ServerlessSpec
 
 from app.config import (
-    EMBEDDING_MODEL,
+    EMBEDDING_FINGERPRINT,
     PINECONE_API_KEY,
     PINECONE_INDEX_NAME,
     PINECONE_MAX_RETRIES,
@@ -30,7 +30,7 @@ PROCESSED_DIR = PROJECT_ROOT / "Data" / "processed"
 INDEX_NAME = PINECONE_INDEX_NAME
 COLLECTION_NAME = INDEX_NAME
 
-DEFAULT_EMBEDDING_MODEL = EMBEDDING_MODEL
+DEFAULT_EMBEDDING_MODEL = EMBEDDING_FINGERPRINT
 DEFAULT_CLOUD = os.getenv("PINECONE_CLOUD", "aws")
 DEFAULT_REGION = os.getenv("PINECONE_REGION", "us-east-1")
 
@@ -46,6 +46,10 @@ METADATA_FIELDS = (
 )
 INDEX_READY_TIMEOUT_SECONDS = 90
 INDEX_READY_POLL_SECONDS = 2
+
+
+class PineconeConfigurationError(RuntimeError):
+    """Raised when Pinecone credentials or index configuration are invalid."""
 
 
 # --------------------------------------------------
@@ -91,14 +95,14 @@ def get_pinecone_client() -> Pinecone:
     """Connect to Pinecone and verify server availability."""
     api_key = PINECONE_API_KEY
     if not api_key or not api_key.strip():
-        raise RuntimeError(
+        raise PineconeConfigurationError(
             "PINECONE_API_KEY environment variable is not set. "
             "Please configure your Pinecone API key."
         )
 
     clean_key = api_key.strip().strip("'\"").strip()
     if clean_key.startswith("<") and clean_key.endswith(">"):
-        raise RuntimeError(
+        raise PineconeConfigurationError(
             "PINECONE_API_KEY is set to a placeholder. "
             "Set a valid Pinecone API key in the backend environment."
         )
@@ -206,7 +210,12 @@ def is_document_indexed(client: Pinecone, document_id: str) -> bool:
     index = client.Index(INDEX_NAME)
     result = index.query(
         vector=[0.1] * VECTOR_SIZE,
-        filter={"document_id": {"$eq": document_id}},
+        filter={
+            "$and": [
+                {"document_id": {"$eq": document_id}},
+                {"embedding_model": {"$eq": DEFAULT_EMBEDDING_MODEL}},
+            ]
+        },
         top_k=1,
         include_metadata=False,
         include_values=False,

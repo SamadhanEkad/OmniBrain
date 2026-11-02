@@ -62,20 +62,27 @@ PINECONE_REGION = os.getenv("PINECONE_REGION", "us-east-1")
 PINECONE_TIMEOUT_SECONDS = 20.0
 PINECONE_MAX_RETRIES = 2
 
-# Ollama configuration shared by document and query embedding.
+# Ollama is an optional local-development embedding provider. Production uses
+# Gemini embeddings unless a provider is explicitly selected otherwise.
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "gemini").strip().lower()
+if EMBEDDING_PROVIDER not in {"gemini", "ollama"}:
+    raise ValueError("EMBEDDING_PROVIDER must be 'gemini' or 'ollama'.")
+
 OLLAMA_URL = os.getenv(
     "OLLAMA_URL",
     "http://localhost:11434",
 ).rstrip("/")
-EMBEDDING_MODEL = os.getenv(
-    "EMBEDDING_MODEL",
-    "nomic-embed-text-v2-moe",
-)
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "").strip()
 VECTOR_SIZE = int(os.getenv("VECTOR_SIZE", "768"))
 OLLAMA_LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "llama3.2:1b")
 
 if VECTOR_SIZE <= 0:
     raise ValueError("VECTOR_SIZE must be a positive integer.")
+EMBEDDING_FINGERPRINT = (
+    f"{EMBEDDING_PROVIDER}:{EMBEDDING_MODEL}:{VECTOR_SIZE}"
+    if EMBEDDING_MODEL
+    else ""
+)
 
 
 # --------------------------------------------------

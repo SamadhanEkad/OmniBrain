@@ -17,6 +17,7 @@ from app.services.answer_generator import (
     build_prompt,
 )
 from app.services import document_qa_service
+from app.services import embedding_service
 from app.services import file_service
 from app.services import vector_store
 from app.services.text_chunker import chunk_extracted_json
@@ -62,8 +63,8 @@ def test_cors_allows_local_development_origin():
 
 def test_readiness_reports_missing_provider_configuration(monkeypatch):
     monkeypatch.setattr(main_module, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(main_module, "GEMINI_MODEL", "")
     monkeypatch.setattr(main_module, "PINECONE_API_KEY", "")
-    monkeypatch.setattr(main_module, "OLLAMA_URL", "http://127.0.0.1:1")
 
     response = TestClient(app).get("/ready")
 
@@ -73,7 +74,52 @@ def test_readiness_reports_missing_provider_configuration(monkeypatch):
         "checks": {
             "gemini": "not_configured",
             "pinecone": "not_configured",
-            "ollama": "unavailable",
+            "embedding": "not_configured",
+        },
+    }
+
+
+def test_readiness_checks_live_provider_and_index_compatibility(monkeypatch):
+    pinecone_client = Mock()
+    pinecone_client.list_indexes.return_value = [
+        SimpleNamespace(name="test-index"),
+    ]
+    pinecone_client.describe_index.return_value = SimpleNamespace(
+        dimension=768,
+        metric="cosine",
+    )
+    monkeypatch.setattr(main_module, "GEMINI_API_KEY", "configured")
+    monkeypatch.setattr(main_module, "GEMINI_MODEL", "supported-model")
+    monkeypatch.setattr(main_module, "PINECONE_API_KEY", "configured")
+    monkeypatch.setattr(main_module, "PINECONE_INDEX_NAME", "test-index")
+    monkeypatch.setattr(main_module, "VECTOR_SIZE", 768)
+    monkeypatch.setattr(main_module, "EMBEDDING_PROVIDER", "gemini")
+    monkeypatch.setattr(main_module, "EMBEDDING_MODEL", "test-embedding-model")
+    monkeypatch.setattr(
+        main_module,
+        "get_gemini_client",
+        Mock(models=Mock(get=Mock())),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_pinecone_client",
+        Mock(return_value=pinecone_client),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "embed_texts",
+        Mock(return_value=[[0.25] * 768]),
+    )
+
+    response = TestClient(app).get("/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "checks": {
+            "gemini": "ready",
+            "pinecone": "ready",
+            "embedding": "ready",
         },
     }
 
@@ -135,6 +181,20 @@ def test_is_document_indexed_uses_configured_dimension_without_extra_describe():
         "123e4567-e89b-12d3-a456-426614174000",
     )
     assert len(index.query.call_args.kwargs["vector"]) == vector_store.VECTOR_SIZE
+    assert index.query.call_args.kwargs["filter"] == {
+        "$and": [
+            {
+                "document_id": {
+                    "$eq": "123e4567-e89b-12d3-a456-426614174000",
+                },
+            },
+            {
+                "embedding_model": {
+                    "$eq": vector_store.DEFAULT_EMBEDDING_MODEL,
+                },
+            },
+        ],
+    }
     client.describe_index.assert_not_called()
 
 
@@ -431,6 +491,38 @@ def test_multi_document_endpoint_maps_gemini_failures_to_safe_statuses(
 
     assert response.status_code == expected_status
     assert "safe provider error" in response.json()["detail"]
+    assert "Traceback" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("exception_type", "expected_status"),
+    [
+        (embedding_service.EmbeddingAuthenticationError, 503),
+        (embedding_service.EmbeddingQuotaError, 429),
+        (embedding_service.EmbeddingTimeoutError, 504),
+        (embedding_service.EmbeddingUnavailableError, 503),
+        (embedding_service.EmbeddingConfigurationError, 503),
+    ],
+)
+def test_multi_document_endpoint_maps_embedding_failures_safely(
+    monkeypatch,
+    exception_type,
+    expected_status,
+):
+    monkeypatch.setattr(
+        "app.api.questions.answer_documents_question",
+        Mock(side_effect=exception_type("safe embedding failure")),
+    )
+
+    response = TestClient(app).post(
+        "/api/documents/answer",
+        json={
+            "question": "Compare the selected documents.",
+            "document_ids": ["123e4567-e89b-12d3-a456-426614174000"],
+        },
+    )
+
+    assert response.status_code == expected_status
     assert "Traceback" not in response.text
 
 

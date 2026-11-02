@@ -4,19 +4,16 @@ import logging
 import math
 import time
 
-import requests
-from pinecone import Pinecone, RetryConfig
-
 from app.config import (
-    EMBEDDING_MODEL,
-    OLLAMA_URL,
-    PINECONE_API_KEY,
+    EMBEDDING_FINGERPRINT,
     PINECONE_INDEX_NAME,
-    PINECONE_MAX_RETRIES,
-    PINECONE_TIMEOUT_SECONDS,
     PROCESSED_DATA_DIR,
-    VECTOR_SIZE,
 )
+from app.services.embedding_service import (
+    RETRIEVAL_QUERY,
+    embed_texts,
+)
+from app.services.vector_store import get_pinecone_client
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +26,6 @@ COLLECTION_NAME = INDEX_NAME
 
 DEFAULT_TOP_K = 3
 MAX_TOP_K = 20
-
-# Must match the query/document embedding conventions used
-# when the PDF chunks were originally indexed.
-QUERY_PREFIX = "search_query: "
-
-EMBEDDING_TIMEOUT = (5, 45)
-
 
 # --------------------------------------------------
 # 2. Generate an embedding for the user's question
@@ -52,114 +42,12 @@ def embed_query(query: str) -> list[float]:
     if not isinstance(query, str) or not query.strip():
         raise ValueError("The search query cannot be empty.")
 
-    if VECTOR_SIZE <= 0:
-        raise ValueError("VECTOR_SIZE must be a positive integer.")
-
-    try:
-        response = requests.post(
-            f"{OLLAMA_URL}/api/embed",
-            json={
-                "model": EMBEDDING_MODEL,
-                "input": QUERY_PREFIX + query.strip(),
-            },
-            timeout=EMBEDDING_TIMEOUT,
-        )
-
-        response.raise_for_status()
-        result = response.json()
-
-    except requests.exceptions.Timeout as exc:
-        raise RuntimeError(
-            "Query embedding timed out. Check Ollama performance "
-            "and ensure the embedding model is available."
-        ) from exc
-
-    except requests.exceptions.ConnectionError as exc:
-        raise RuntimeError(
-            f"Cannot connect to Ollama at {OLLAMA_URL}. "
-            "Start Ollama and verify the service is running."
-        ) from exc
-
-    except requests.exceptions.HTTPError as exc:
-        details = response.text[:1000]
-        raise RuntimeError(
-            "Ollama embedding request failed "
-            f"(HTTP {response.status_code}): {details}"
-        ) from exc
-
-    except requests.exceptions.RequestException as exc:
-        raise RuntimeError(
-            f"Query embedding request failed: {exc}"
-        ) from exc
-
-    except ValueError as exc:
-        raise RuntimeError(
-            "Ollama returned an invalid JSON embedding response."
-        ) from exc
-
-    embeddings = result.get("embeddings")
-
-    if not isinstance(embeddings, list) or not embeddings:
-        raise RuntimeError(
-            "Ollama returned no embeddings for the query."
-        )
-
-    vector = embeddings[0]
-
-    if not isinstance(vector, list) or len(vector) != VECTOR_SIZE:
-        actual_size = (
-            len(vector) if isinstance(vector, list) else "invalid"
-        )
-
-        raise ValueError(
-            f"Expected {VECTOR_SIZE} embedding dimensions, "
-            f"but Ollama returned {actual_size}. "
-            "Check the embedding model and VECTOR_SIZE."
-        )
-
-    if not all(
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        for value in vector
-    ):
-        raise ValueError(
-            "The query embedding contains invalid numeric values."
-        )
-
-    return vector
+    return embed_texts([query.strip()], RETRIEVAL_QUERY)[0]
 
 
 # --------------------------------------------------
 # 3. Connect to Pinecone
 # --------------------------------------------------
-
-def get_pinecone_client() -> Pinecone:
-    """Create a Pinecone client with bounded request timeouts and retries."""
-    api_key = PINECONE_API_KEY
-    if not api_key or not api_key.strip():
-        raise RuntimeError(
-            "PINECONE_API_KEY environment variable is not set. "
-            "Please configure your Pinecone API key."
-        )
-
-    clean_key = api_key.strip().strip("'\"").strip()
-    if clean_key.startswith("<") and clean_key.endswith(">"):
-        raise RuntimeError(
-            "PINECONE_API_KEY is set to a placeholder. "
-            "Set a valid Pinecone API key in the backend environment."
-        )
-
-    return Pinecone(
-        api_key=clean_key,
-        timeout=PINECONE_TIMEOUT_SECONDS,
-        retry_config=RetryConfig(
-            max_retries=PINECONE_MAX_RETRIES,
-            backoff_factor=0.25,
-            max_wait=4.0,
-        ),
-    )
-
 
 def load_all_document_chunks(document_id: str) -> list[dict]:
     """
@@ -221,14 +109,20 @@ def _normalize_document_ids(
 
 
 def _build_filter(document_ids: list[str] | None) -> dict | None:
-    """Pinecone metadata filter restricting results to chosen PDFs."""
+    """Filter results to selected PDFs and the active embedding model."""
+    model_filter = {
+        "embedding_model": {"$eq": EMBEDDING_FINGERPRINT},
+    }
+
     if not document_ids:
-        return None
+        return model_filter
 
     if len(document_ids) == 1:
-        return {"document_id": {"$eq": document_ids[0]}}
+        document_filter = {"document_id": {"$eq": document_ids[0]}}
+    else:
+        document_filter = {"document_id": {"$in": list(document_ids)}}
 
-    return {"document_id": {"$in": list(document_ids)}}
+    return {"$and": [document_filter, model_filter]}
 
 
 def _query_once(

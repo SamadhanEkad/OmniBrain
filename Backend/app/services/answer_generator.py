@@ -1,14 +1,13 @@
 import argparse
 import logging
 import time
-from functools import lru_cache
 
 import httpx
-from google import genai
 from google.genai import types
 from google.genai.errors import APIError, ClientError
 
-from app.config import GEMINI_API_KEY, GEMINI_MODEL
+from app.config import GEMINI_MODEL
+from app.services.gemini_client import get_gemini_client
 from app.services.retrieval_service import (
     DEFAULT_TOP_K,
     search_documents,
@@ -26,8 +25,6 @@ MAX_CONTEXT_CHARS = 24000
 # Larger budget used when several PDFs contribute excerpts.
 MAX_MULTI_DOC_CONTEXT_CHARS = 40000
 MAX_OUTPUT_TOKENS = 2048
-GEMINI_TIMEOUT_MS = 60_000
-
 # Balanced temperature for natural, beginner-friendly explanations while preserving facts.
 TEMPERATURE = 0.2
 
@@ -55,41 +52,6 @@ class GeminiUnavailableError(RuntimeError):
 # --------------------------------------------------
 # 2. Gemini Client
 # --------------------------------------------------
-
-@lru_cache(maxsize=1)
-def get_gemini_client() -> genai.Client:
-    """Connect to Google GenAI client using the configured API key."""
-    api_key = GEMINI_API_KEY
-    if not api_key or not api_key.strip():
-        raise RuntimeError(
-            "GEMINI_API_KEY environment variable is not set. "
-            "Please configure your Gemini API key."
-        )
-    clean_key = api_key.strip().strip("'\"").strip()
-    if clean_key.startswith("<") and clean_key.endswith(">"):
-        raise RuntimeError(
-            "GEMINI_API_KEY is set to a placeholder. "
-            "Set a valid Gemini API key in the backend environment."
-        )
-    if not GEMINI_MODEL:
-        raise RuntimeError(
-            "GEMINI_MODEL is not configured. Set it to a supported Gemini model."
-        )
-
-    return genai.Client(
-        api_key=clean_key,
-        http_options=types.HttpOptions(
-            timeout=GEMINI_TIMEOUT_MS,
-            retry_options=types.HttpRetryOptions(
-                attempts=2,
-                initial_delay=1,
-                max_delay=4,
-                jitter=1,
-                http_status_codes=[408, 429, 500, 502, 503, 504],
-            ),
-        ),
-    )
-
 
 # --------------------------------------------------
 # 3. Prepare retrieved document context
@@ -368,7 +330,7 @@ def generate_answer(
 
     target_model = (model or DEFAULT_GEMINI_MODEL).strip()
     if not target_model:
-        raise RuntimeError(
+        raise GeminiModelError(
             "GEMINI_MODEL is not configured. Set it to a supported Gemini model."
         )
     client = get_gemini_client()
