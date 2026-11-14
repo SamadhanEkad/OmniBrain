@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import sys
+from threading import Lock
 from pathlib import Path
 from typing import Any
 
@@ -29,9 +30,13 @@ MODEL_NAME = EMBEDDING_MODEL
 MODEL_FINGERPRINT = EMBEDDING_FINGERPRINT
 OLLAMA_CLIENT: Any | None = None
 EMBEDDING_BATCH_SIZE = 32
+LOCAL_MODEL_BATCH_SIZE = 8
+LOCAL_EMBEDDING_MODEL: Any | None = None
+LOCAL_EMBEDDING_MODEL_NAME: str | None = None
+LOCAL_EMBEDDING_MODEL_LOCK = Lock()
 
-# Nomic model input limit is 512 tokens.
-# Keep a safety margin because our tokenizer is approximate.
+# Embedding models support roughly 512 input tokens; keep a margin for the
+# approximate tokenizer used by the chunker.
 SAFE_TOKEN_LIMIT = 480
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -87,6 +92,42 @@ class EmbeddingUnavailableError(EmbeddingProviderError):
     """Raised when the embedding provider cannot be reached."""
 
 
+def _get_local_embedding_model() -> Any:
+    """Load the configured Sentence Transformer once per backend process."""
+    global LOCAL_EMBEDDING_MODEL, LOCAL_EMBEDDING_MODEL_NAME
+    with LOCAL_EMBEDDING_MODEL_LOCK:
+        if (
+            LOCAL_EMBEDDING_MODEL is not None
+            and LOCAL_EMBEDDING_MODEL_NAME == MODEL_NAME
+        ):
+            return LOCAL_EMBEDDING_MODEL
+
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise EmbeddingConfigurationError(
+                "The sentence-transformers dependency is required for "
+                "EMBEDDING_PROVIDER=local."
+            ) from exc
+
+        try:
+            LOCAL_EMBEDDING_MODEL = SentenceTransformer(
+                MODEL_NAME,
+                device="cpu",
+            )
+        except Exception as exc:
+            LOCAL_EMBEDDING_MODEL = None
+            LOCAL_EMBEDDING_MODEL_NAME = None
+            raise EmbeddingModelError(
+                f"Unable to load local embedding model '{MODEL_NAME}'. "
+                "Check the model ID, network access, and available memory."
+            ) from exc
+
+        LOCAL_EMBEDDING_MODEL_NAME = MODEL_NAME
+        logger.info("Loaded local embedding model %s on CPU.", MODEL_NAME)
+        return LOCAL_EMBEDDING_MODEL
+
+
 def embed_texts(texts: list[str], task_type: str) -> list[list[float]]:
     """Embed text with the configured provider and validate vector dimensions."""
     if not texts or any(not isinstance(text, str) or not text.strip() for text in texts):
@@ -100,11 +141,13 @@ def embed_texts(texts: list[str], task_type: str) -> list[list[float]]:
             "GEMINI_API_KEY is required for Gemini embeddings."
         )
 
+    prepared_texts = [text.strip() for text in texts]
+
     try:
         if EMBEDDING_PROVIDER == "gemini":
             response = get_gemini_client().models.embed_content(
                 model=MODEL_NAME,
-                contents=texts,
+                contents=prepared_texts,
                 config=types.EmbedContentConfig(
                     task_type=task_type,
                     output_dimensionality=VECTOR_SIZE,
@@ -115,6 +158,19 @@ def embed_texts(texts: list[str], task_type: str) -> list[list[float]]:
                 for embedding in (response.embeddings or [])
                 if embedding is not None
             ]
+        elif EMBEDDING_PROVIDER == "local":
+            model = _get_local_embedding_model()
+            encoded = model.encode(
+                prepared_texts,
+                batch_size=LOCAL_MODEL_BATCH_SIZE,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+            )
+            vectors = [
+                vector.tolist() if hasattr(vector, "tolist") else list(vector)
+                for vector in encoded
+            ]
         elif EMBEDDING_PROVIDER == "ollama":
             prefix = (
                 "search_document: "
@@ -123,11 +179,13 @@ def embed_texts(texts: list[str], task_type: str) -> list[list[float]]:
             )
             response = _get_ollama_client().embed(
                 model=MODEL_NAME,
-                input=[prefix + text.strip() for text in texts],
+                input=[prefix + text for text in prepared_texts],
             )
             vectors = response.embeddings
         else:
             raise ValueError("Unsupported embedding provider configuration.")
+    except (EmbeddingConfigurationError, EmbeddingModelError):
+        raise
     except APIError as exc:
         status = getattr(exc, "code", None)
         if status in (401, 403):

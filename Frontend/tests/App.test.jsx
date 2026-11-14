@@ -140,6 +140,35 @@ The equation is $E=mc^2$.
     expect(healthError.textContent).toContain("CORS_ORIGINS");
   });
 
+  it("keeps the backend reachable when an API route returns a server error", async () => {
+    const unavailable = vi.fn();
+    const reachable = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ detail: "Pinecone is not configured." }, 503),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    window.addEventListener("omnibrain:backend-unavailable", unavailable);
+    window.addEventListener("omnibrain:backend-reachable", reachable);
+
+    try {
+      await expect(
+        api.answerQuestion(
+          ["123e4567-e89b-12d3-a456-426614174000"],
+          "What does this document say?",
+        ),
+      ).rejects.toMatchObject({
+        status: 503,
+        message: "Pinecone is not configured.",
+      });
+
+      expect(reachable).toHaveBeenCalledOnce();
+      expect(unavailable).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("omnibrain:backend-unavailable", unavailable);
+      window.removeEventListener("omnibrain:backend-reachable", reachable);
+    }
+  });
+
   it("sends one combined question request for five uploaded PDFs", async () => {
     const user = userEvent.setup();
     const documentIds = Array.from({ length: 5 }, (_, index) => `doc-${index + 1}`);

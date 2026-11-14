@@ -21,8 +21,8 @@ Uploading a PDF saves and validates it on the backend. The more expensive indexi
 2. The backend validates and saves each PDF on the local filesystem.
 3. On the first question about a PDF, PyMuPDF extracts its embedded text and page numbers.
 4. The backend cleans the text and splits it into overlapping chunks.
-5. Ollama creates chunk embeddings, which are stored in Pinecone.
-6. For a question, Ollama creates a query embedding and Pinecone returns matching chunks.
+5. The configured embedding provider creates chunk embeddings, which are stored in Pinecone.
+6. For a question, the same provider creates a query embedding and Pinecone returns matching chunks.
 7. Google Gemini generates an answer from the retrieved text.
 8. The backend returns the answer and source details to the frontend.
 
@@ -35,9 +35,9 @@ flowchart TD
     API -->|First question triggers indexing| EX[PyMuPDF text extraction]
     PDF --> EX
     EX --> CH[Text cleaning and chunking]
-    CH --> EMB[Ollama embedding model]
+    CH --> EMB[Gemini cloud embedding model]
     EMB -->|Document vectors| DB[(Pinecone)]
-    API -->|Question text| QE[Ollama query embedding]
+    API -->|Question text| QE[Gemini query embedding]
     QE -->|Similarity search| DB
     DB -->|Relevant text chunks| GEN[Google Gemini]
     GEN -->|Answer and sources| API
@@ -53,13 +53,13 @@ Normal question answering does not make a separate metadata-generation request. 
 | Frontend | React 18, JavaScript, Vite 6, CSS |
 | Frontend libraries | Lucide React, React Markdown, KaTeX, Remark GFM, Remark Math, Rehype KaTeX |
 | Backend | Python, FastAPI, Uvicorn, Pydantic |
-| AI and LLM | Google Gemini through `google-genai` for answers; Ollama for embeddings and an optional local metadata fallback |
-| Embedding model | `nomic-embed-text-v2-moe` (Ollama) |
+| AI and LLM | Google Gemini through `google-genai` for answers; Sentence Transformers for local embeddings |
+| Embedding model | `BAAI/bge-base-en-v1.5` with 768 output dimensions |
 | Document processing | PyMuPDF for PDF text extraction; LangChain text splitters and `tiktoken` for chunking and token counting |
 | Vector database | Pinecone, using a cosine-distance index |
 | Configuration | `python-dotenv` and environment variables |
 
-Set `GEMINI_MODEL` in the backend environment. The recommended stable model is `gemini-3.6-flash`, which Google describes as frontier-level intelligence optimized for speed and cost. `gemini-3.5-flash-lite` prioritizes low latency and high throughput, but should be quality-benchmarked against your PDFs before substituting it. Preview models are not selected implicitly. See Google's [model catalog](https://ai.google.dev/gemini-api/docs/models) and [Gemini 3.6 Flash details](https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash).
+Set `GEMINI_MODEL` to a model currently available to the configured API key. `/ready` checks the configured model through the Gemini API; consult Google's [model catalog](https://ai.google.dev/gemini-api/docs/models) when choosing it.
 
 ## Local development URLs
 
@@ -78,7 +78,8 @@ These are local development addresses, not public deployment URLs. If port 5173 
 | Service | URL | Purpose |
 |---|---|---|
 | OmniBrain repository | [github.com/SamadhanEkad/OmniBrain](https://github.com/SamadhanEkad/OmniBrain) | Source repository, verified from the Git remote |
-| Ollama | [ollama.com](https://ollama.com/) | Runs the local embedding model and optional metadata fallback |
+| Hugging Face model | [BAAI/bge-base-en-v1.5](https://huggingface.co/BAAI/bge-base-en-v1.5) | Public, local 768-dimensional text embedding model |
+| Ollama | [ollama.com](https://ollama.com/) | Optional legacy local embedding provider and metadata fallback |
 | Ollama API documentation | [docs.ollama.com](https://docs.ollama.com/) | Ollama installation and API reference |
 | Pinecone | [pinecone.io](https://www.pinecone.io/) | Hosted vector database used to store and search document embeddings |
 | Pinecone documentation | [docs.pinecone.io](https://docs.pinecone.io/) | Pinecone index and API reference |
@@ -119,7 +120,7 @@ OmniBrain/
 
 - Python 3.12 (the repository's tested and Render-selected runtime; the source uses Python 3.10+ syntax).
 - Node.js 18.x, 20.x, or 22+ and npm (the frontend uses Vite 6).
-- [Ollama](https://ollama.com/) running locally, with the embedding model `nomic-embed-text-v2-moe` available.
+- Optional for local development: [Ollama](https://ollama.com/) with `nomic-embed-text-v2-moe`.
 - A Pinecone account and API key.
 - A Google Gemini API key for answer generation.
 
@@ -140,12 +141,12 @@ cd OmniBrain
 cd Backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 ```
 
 If PowerShell prevents virtual-environment activation, use the environment's Python executable directly: `.\.venv\Scripts\python.exe`.
 
-To run backend tests, install `requirements-dev.txt` instead of `requirements.txt`:
+`requirements-dev.txt` includes the optional Ollama client for local development and tests. `requirements.txt` installs Sentence Transformers for local BGE embeddings; no Hugging Face API token is needed for this public model.
 
 ```powershell
 python -m pip install -r requirements-dev.txt
@@ -154,16 +155,20 @@ python -m pytest
 
 ### 3. Configure AI and database services
 
-Start Ollama using the installed Ollama application or its normal service command, then download the embedding model:
+The default embedding provider runs BGE locally through Sentence Transformers. For optional local Ollama embeddings, set the provider and download its model:
 
 ```powershell
+$env:EMBEDDING_PROVIDER = "ollama"
+$env:EMBEDDING_MODEL = "nomic-embed-text-v2-moe"
 ollama pull nomic-embed-text-v2-moe
 ```
 
-To enable the optional local metadata fallback as well:
+The BGE embedding configuration used by default is:
 
 ```powershell
-ollama pull llama3.2:1b
+$env:EMBEDDING_PROVIDER = "local"
+$env:EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
+$env:VECTOR_SIZE = "768"
 ```
 
 Set the Pinecone and Gemini credentials in the same PowerShell session that will run the backend. Replace the placeholders locally; do not commit real credentials:
@@ -171,7 +176,7 @@ Set the Pinecone and Gemini credentials in the same PowerShell session that will
 ```powershell
 $env:PINECONE_API_KEY = "<your-pinecone-api-key>"
 $env:GEMINI_API_KEY = "<your-gemini-api-key>"
-$env:GEMINI_MODEL = "gemini-3.6-flash"
+$env:GEMINI_MODEL = "gemini-3.5-flash"
 ```
 
 The code creates the Pinecone index if it does not exist. Its defaults are index `omnibrain-documents`, AWS cloud, region `us-east-1`, and 768 vector dimensions. The current implementation uses Pinecone's default namespace; no configurable namespace is active. The embedding model, vector size, and Pinecone index dimensions must agree.
@@ -218,7 +223,7 @@ Open the frontend URL printed by Vite (normally `http://localhost:5173`). Attach
 |---|---|---|
 | `GET` | `/` | Returns basic API status and version information |
 | `GET` | `/health` | Liveness check; confirms that the API process is responding |
-| `GET` | `/ready` | Readiness check for Gemini authentication/model access, Pinecone, and the configured Ollama embedding model |
+| `GET` | `/ready` | Readiness check for Gemini authentication/model access, Pinecone index compatibility, and live embedding generation |
 | `POST` | `/api/documents/upload` | Accepts multipart form data with one or more files under the repeated `files` field; returns `uploaded` and `failed` lists |
 | `DELETE` | `/api/documents/{document_id}` | Removes the local document files and its Pinecone vectors |
 | `POST` | `/api/documents/answer` | Accepts JSON `{"question": "...", "document_ids": ["..."]}` for selected PDFs; runs combined retrieval and one answer-generation call |
@@ -231,13 +236,14 @@ The question must contain 1–2000 characters. Each source may include `document
 | Variable | Purpose | Default / requirement |
 |---|---|---|
 | `PINECONE_API_KEY` | Authenticates with Pinecone | Required for indexing and retrieval |
-| `PINECONE_INDEX_NAME` | Pinecone index name | `omnibrain-documents` |
+| `PINECONE_INDEX_NAME` | Pinecone index name | `omnibrain-documents`; index must use 768 dimensions and cosine metric |
 | `PINECONE_CLOUD` | Cloud used when creating the index | `aws` |
 | `PINECONE_REGION` | Region used when creating the index | `us-east-1` |
-| `GEMINI_API_KEY` | Authenticates Gemini answer generation | Required for generated answers |
-| `GEMINI_MODEL` | Gemini model name | Required; `gemini-3.6-flash` is recommended and must be available to the configured API key |
-| `OLLAMA_URL` | Ollama API base address used for document/query embeddings and the metadata fallback | `http://localhost:11434` locally; set a reachable service URL on Render |
-| `EMBEDDING_MODEL` | Ollama model used for both document and query embeddings | `nomic-embed-text-v2-moe` |
+| `GEMINI_API_KEY` | Authenticates Gemini answer generation | Required in production |
+| `GEMINI_MODEL` | Gemini answer-generation model | Defaults to `gemini-3.5-flash`; readiness verifies it is available to the configured API key |
+| `EMBEDDING_PROVIDER` | Provider used for both document and query embeddings | `local` by default; optional `gemini` or `ollama` |
+| `EMBEDDING_MODEL` | Model used for both document and query embeddings | `BAAI/bge-base-en-v1.5` by default for local; provider-compatible model if using Gemini or Ollama |
+| `OLLAMA_URL` | Local Ollama API address | `http://localhost:11434`; never required on Render |
 | `OLLAMA_LLM_MODEL` | Local Ollama model used as a metadata fallback | `llama3.2:1b` |
 | `VECTOR_SIZE` | Expected Pinecone and embedding vector dimension | `768` |
 | `MAX_FILES_PER_UPLOAD` | Maximum PDFs in one upload request | `5` |
@@ -265,19 +271,29 @@ Deploy the backend as a **Web Service** and the frontend as a separate **Static 
 
 Set these variables in the Render dashboard; do not put credentials in `render.yaml` or source code:
 
+Set the embedding variables below in Render. The model is downloaded from the
+public Hugging Face repository when the backend first loads it; no Hugging Face
+API key is required.
+
 | Variable | Requirement |
 |---|---|
 | `PINECONE_API_KEY` | Required; Pinecone index/vector storage |
 | `GEMINI_API_KEY` | Required for generated answers |
-| `OLLAMA_URL` | Required; URL of an Ollama API reachable from Render (not `localhost`) |
+| `OLLAMA_URL` | Not required in production; only used for local development |
 | `CORS_ORIGINS` | `https://omnibrain-frontend-be3o.onrender.com` (exact frontend origin; no trailing slash) |
-| `GEMINI_MODEL` | Required; use a model supported by the Gemini API key (recommended: `gemini-3.6-flash`) |
+| `GEMINI_MODEL` | `gemini-3.5-flash` by default; readiness verifies access |
 | `PINECONE_INDEX_NAME` | Optional; defaults to `omnibrain-documents` |
 | `PINECONE_CLOUD`, `PINECONE_REGION` | Optional; used if the index needs to be created |
-| `EMBEDDING_MODEL`, `VECTOR_SIZE` | Keep at `nomic-embed-text-v2-moe` and `768` unless all stored vectors and the Pinecone index are deliberately migrated |
+| `EMBEDDING_PROVIDER` | `local`; Sentence Transformers inference on CPU |
+| `EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` |
+| `VECTOR_SIZE` | `768`; must match the Pinecone index |
 | `OLLAMA_LLM_MODEL` | Optional metadata fallback only; defaults to `llama3.2:1b` |
 
-The default `OLLAMA_URL` (`localhost:11434`) is only for local development. On Render, localhost refers to the backend container, not a developer's computer. Provide an always-available Ollama service accessible from the backend and make sure it has `nomic-embed-text-v2-moe` available. `/ready` checks that the configured embedding model is installed. No Ollama service or hosted embedding provider is provisioned by this repository.
+Document and query embeddings use the same local Sentence Transformer, trimmed text, batch settings, and normalized 768-dimensional output. The model is loaded once per backend process and reused; `/ready` loads it if necessary and generates a real probe vector. Gemini remains the answer-generation provider.
+
+The Pinecone index dimension can remain 768 with cosine metric, but embedding model spaces are not interchangeable. Retrieval filters by the provider/model/dimension fingerprint, so Nomic and Gemini vectors are not returned for BGE queries. For a safe migration, retain the old index and create a separate 768-dimensional cosine index (for example `omnibrain-documents-bge`). Configure a staging backend to use that index and the BGE variables, restore the original PDFs and chunk files with their existing document IDs, and ask a question for each document to trigger indexing into the empty BGE index. Verify expected document counts, answers, and page citations before changing the production service's `PINECONE_INDEX_NAME` to the new index. Keep the old index for rollback until the BGE deployment is verified. If source PDFs/chunks are unavailable, restore them from backup or re-upload them before migration; the old vectors alone are not suitable as BGE embeddings. Switching models while keeping the same Pinecone index is not rollback-safe: re-embedding uses the existing deterministic vector IDs and overwrites their old values.
+
+The model has roughly 110 million parameters, and local PyTorch inference uses substantially more memory than the model file alone. Render's 512 MB Free/Starter plans are not suitable; use at least the 2 GB `1c-2g` (Standard) plan, and consider 4 GB for higher concurrency or large batches. The model is cached in memory for the process lifetime, not reloaded for every request.
 
 The backend writes uploaded PDFs, document information, extracted text, chunks, and locally cached embeddings under `Backend/Data`. Render's ordinary filesystem is ephemeral. To preserve uploaded documents across restarts and deploys, use a Web Service with a persistent disk mounted at:
 
@@ -320,8 +336,9 @@ The deployed frontend is `https://omnibrain-frontend-be3o.onrender.com` (letter 
 - **Backend does not start:** Confirm Python 3.12 is selected, activate the virtual environment, and install `Backend/requirements.txt`.
 - **Frontend dependencies are missing:** Run `npm ci` from `Frontend/`, then start it with `npm run dev`.
 - **Frontend cannot reach the backend:** Start the backend on port 8000, check that `VITE_API_URL` points to it, and restart Vite after changing its environment. The backend allows local development origins by default.
-- **Question answering fails:** Check `/ready`, `GEMINI_API_KEY`, and `GEMINI_MODEL`. Authentication failures are reported separately from an unavailable model.
-- **Embedding or indexing fails:** Make sure the configured Ollama service is reachable and `nomic-embed-text-v2-moe` is installed. Check that `PINECONE_API_KEY` is valid and the index dimension matches `VECTOR_SIZE` (768 by default).
+- **Question answering fails:** Check `/ready` first. The answer route indexes uploaded PDFs in Pinecone before it calls Ollama or Gemini, so an unset `PINECONE_API_KEY` can fail before Gemini is reached. Configure `GEMINI_API_KEY` and a model supported by that key in `GEMINI_MODEL`; authentication, invalid-model, quota, and timeout errors are reported separately.
+- **Embedding or indexing fails:** Check the backend logs for the model-load exception and verify the Render instance has at least 2 GB RAM and outbound access to the public Hugging Face model. Confirm `EMBEDDING_PROVIDER=local`, `EMBEDDING_MODEL=BAAI/bge-base-en-v1.5`, and that the Pinecone index dimension matches `VECTOR_SIZE=768`. `/ready` loads the model and generates an actual probe vector.
+- **Question request returns 503:** The backend logs the exception traceback in Render with configured Gemini and Pinecone API keys redacted; the traceback is not returned to the frontend. Check those logs alongside `/ready` rather than treating `/health` as a provider check.
 - **PDF upload or extraction fails:** Check that the file is a valid, unencrypted PDF under 20 MiB and contains selectable text. Scanned PDFs need OCR, which is not currently provided.
 
 ## Future scope

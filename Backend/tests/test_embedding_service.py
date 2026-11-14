@@ -193,6 +193,112 @@ def test_query_embedding_uses_the_same_gemini_model_and_query_task(monkeypatch):
     assert call["config"].output_dimensionality == 768
 
 
+def test_local_document_and_query_embeddings_use_identical_preprocessing(
+    monkeypatch,
+):
+    from app.services import retrieval_service
+
+    model = Mock()
+    model.encode.return_value = [[0.25] * 768]
+    monkeypatch.setattr(embedding_service, "EMBEDDING_PROVIDER", "local")
+    monkeypatch.setattr(embedding_service, "MODEL_NAME", "BAAI/bge-base-en-v1.5")
+    monkeypatch.setattr(embedding_service, "VECTOR_SIZE", 768)
+    monkeypatch.setattr(
+        embedding_service,
+        "_get_local_embedding_model",
+        Mock(return_value=model),
+    )
+
+    document_vector = embedding_service.embed_texts(
+        ["  matching input text  "],
+        embedding_service.RETRIEVAL_DOCUMENT,
+    )
+    query_vector = retrieval_service.embed_query("  matching input text  ")
+
+    assert document_vector == [query_vector] == [[0.25] * 768]
+    assert model.encode.call_args_list[0].args[0] == ["matching input text"]
+    assert model.encode.call_args_list[1].args[0] == ["matching input text"]
+    assert model.encode.call_args_list[0].kwargs == {
+        "batch_size": embedding_service.LOCAL_MODEL_BATCH_SIZE,
+        "show_progress_bar": False,
+        "convert_to_numpy": True,
+        "normalize_embeddings": True,
+    }
+    assert model.encode.call_args_list[1].kwargs == model.encode.call_args_list[0].kwargs
+
+
+def test_local_embedding_rejects_vectors_with_wrong_dimension(monkeypatch):
+    model = Mock()
+    model.encode.return_value = [[0.25] * 767]
+    monkeypatch.setattr(embedding_service, "EMBEDDING_PROVIDER", "local")
+    monkeypatch.setattr(embedding_service, "VECTOR_SIZE", 768)
+    monkeypatch.setattr(
+        embedding_service,
+        "_get_local_embedding_model",
+        Mock(return_value=model),
+    )
+
+    with pytest.raises(
+        embedding_service.EmbeddingProviderError,
+        match="exactly 768 dimensions",
+    ):
+        embedding_service.embed_texts(
+            ["test input"],
+            embedding_service.RETRIEVAL_QUERY,
+        )
+
+
+def test_local_embedding_model_is_loaded_once_per_process(monkeypatch):
+    import sys
+    import types
+
+    sentence_transformer = Mock()
+    fake_package = types.ModuleType("sentence_transformers")
+    fake_package.SentenceTransformer = sentence_transformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_package)
+    monkeypatch.setattr(embedding_service, "MODEL_NAME", "BAAI/bge-base-en-v1.5")
+    monkeypatch.setattr(embedding_service, "LOCAL_EMBEDDING_MODEL", None)
+    monkeypatch.setattr(embedding_service, "LOCAL_EMBEDDING_MODEL_NAME", None)
+    monkeypatch.setattr(
+        embedding_service,
+        "LOCAL_EMBEDDING_MODEL_LOCK",
+        embedding_service.Lock(),
+    )
+
+    first_model = embedding_service._get_local_embedding_model()
+    second_model = embedding_service._get_local_embedding_model()
+
+    assert first_model is second_model
+    sentence_transformer.assert_called_once_with(
+        "BAAI/bge-base-en-v1.5",
+        device="cpu",
+    )
+
+
+def test_local_model_load_failure_has_clear_error(monkeypatch):
+    import sys
+    import types
+
+    sentence_transformer = Mock(side_effect=OSError("model download failed"))
+    fake_package = types.ModuleType("sentence_transformers")
+    fake_package.SentenceTransformer = sentence_transformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_package)
+    monkeypatch.setattr(embedding_service, "MODEL_NAME", "BAAI/bge-base-en-v1.5")
+    monkeypatch.setattr(embedding_service, "LOCAL_EMBEDDING_MODEL", None)
+    monkeypatch.setattr(embedding_service, "LOCAL_EMBEDDING_MODEL_NAME", None)
+    monkeypatch.setattr(
+        embedding_service,
+        "LOCAL_EMBEDDING_MODEL_LOCK",
+        embedding_service.Lock(),
+    )
+
+    with pytest.raises(
+        embedding_service.EmbeddingModelError,
+        match="Unable to load local embedding model",
+    ):
+        embedding_service._get_local_embedding_model()
+
+
 @pytest.mark.parametrize(
     ("status_code", "exception_type"),
     [

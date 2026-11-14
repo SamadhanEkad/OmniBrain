@@ -65,6 +65,7 @@ def test_readiness_reports_missing_provider_configuration(monkeypatch):
     monkeypatch.setattr(main_module, "GEMINI_API_KEY", "")
     monkeypatch.setattr(main_module, "GEMINI_MODEL", "")
     monkeypatch.setattr(main_module, "PINECONE_API_KEY", "")
+    monkeypatch.setattr(main_module, "EMBEDDING_PROVIDER", "gemini")
 
     response = TestClient(app).get("/ready")
 
@@ -122,6 +123,46 @@ def test_readiness_checks_live_provider_and_index_compatibility(monkeypatch):
             "embedding": "ready",
         },
     }
+
+
+def test_readiness_marks_local_embedding_model_load_failure(monkeypatch):
+    from app.services.embedding_service import EmbeddingModelError
+
+    pinecone_client = Mock()
+    pinecone_client.list_indexes.return_value = [
+        SimpleNamespace(name="test-index"),
+    ]
+    pinecone_client.describe_index.return_value = SimpleNamespace(
+        dimension=768,
+        metric="cosine",
+    )
+    monkeypatch.setattr(main_module, "GEMINI_API_KEY", "configured")
+    monkeypatch.setattr(main_module, "GEMINI_MODEL", "supported-model")
+    monkeypatch.setattr(main_module, "PINECONE_API_KEY", "configured")
+    monkeypatch.setattr(main_module, "PINECONE_INDEX_NAME", "test-index")
+    monkeypatch.setattr(main_module, "VECTOR_SIZE", 768)
+    monkeypatch.setattr(main_module, "EMBEDDING_PROVIDER", "local")
+    monkeypatch.setattr(main_module, "EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
+    monkeypatch.setattr(
+        main_module,
+        "get_gemini_client",
+        Mock(models=Mock(get=Mock())),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_pinecone_client",
+        Mock(return_value=pinecone_client),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "embed_texts",
+        Mock(side_effect=EmbeddingModelError("model could not load")),
+    )
+
+    response = TestClient(app).get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["embedding"] == "model_unavailable"
 
 
 def test_pinecone_index_is_created_and_waited_on_before_upserts(monkeypatch):

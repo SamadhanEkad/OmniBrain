@@ -62,17 +62,30 @@ PINECONE_REGION = os.getenv("PINECONE_REGION", "us-east-1")
 PINECONE_TIMEOUT_SECONDS = 20.0
 PINECONE_MAX_RETRIES = 2
 
-# Ollama is an optional local-development embedding provider. Production uses
-# Gemini embeddings unless a provider is explicitly selected otherwise.
-EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "gemini").strip().lower()
-if EMBEDDING_PROVIDER not in {"gemini", "ollama"}:
-    raise ValueError("EMBEDDING_PROVIDER must be 'gemini' or 'ollama'.")
+# Sentence Transformers is the default local embedding provider. Gemini and
+# Ollama remain optional alternatives when explicitly configured.
+EMBEDDING_PROVIDER = (
+    os.getenv("EMBEDDING_PROVIDER") or "local"
+).strip().lower()
+if EMBEDDING_PROVIDER not in {"local", "gemini", "ollama"}:
+    raise ValueError(
+        "EMBEDDING_PROVIDER must be 'local', 'gemini', or 'ollama'."
+    )
 
 OLLAMA_URL = os.getenv(
     "OLLAMA_URL",
     "http://localhost:11434",
 ).rstrip("/")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "").strip()
+DEFAULT_EMBEDDING_MODEL = (
+    {
+        "local": "BAAI/bge-base-en-v1.5",
+        "gemini": "gemini-embedding-001",
+        "ollama": "nomic-embed-text-v2-moe",
+    }[EMBEDDING_PROVIDER]
+)
+EMBEDDING_MODEL = (
+    os.getenv("EMBEDDING_MODEL", "").strip() or DEFAULT_EMBEDDING_MODEL
+).strip()
 VECTOR_SIZE = int(os.getenv("VECTOR_SIZE", "768"))
 OLLAMA_LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "llama3.2:1b")
 
@@ -90,7 +103,9 @@ EMBEDDING_FINGERPRINT = (
 # --------------------------------------------------
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip()
+GEMINI_MODEL = (
+    os.getenv("GEMINI_MODEL", "").strip() or "gemini-3.5-flash"
+).strip()
 
 
 # --------------------------------------------------

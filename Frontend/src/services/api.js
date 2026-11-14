@@ -124,21 +124,16 @@ async function request(
       signal: controller.signal,
     });
 
+    signalBackendReachable();
     const body = await parseResponse(response);
 
     if (!response.ok) {
-      if (response.status >= 500) {
-        signalBackendUnavailable();
-      }
-
       throw new ApiError(
         getErrorMessage(body, response.status),
         response.status,
         "HTTP_ERROR",
       );
     }
-
-    signalBackendReachable();
 
     return body;
   } catch (error) {
