@@ -35,9 +35,9 @@ flowchart TD
     API -->|First question triggers indexing| EX[PyMuPDF text extraction]
     PDF --> EX
     EX --> CH[Text cleaning and chunking]
-    CH --> EMB[Gemini cloud embedding model]
+    CH --> EMB[Configured embedding provider and model]
     EMB -->|Document vectors| DB[(Pinecone)]
-    API -->|Question text| QE[Gemini query embedding]
+    API -->|Question text| QE[Same configured provider and model]
     QE -->|Similarity search| DB
     DB -->|Relevant text chunks| GEN[Google Gemini]
     GEN -->|Answer and sources| API
@@ -337,7 +337,7 @@ The deployed frontend is `https://omnibrain-frontend-be3o.onrender.com` (letter 
 - **Frontend dependencies are missing:** Run `npm ci` from `Frontend/`, then start it with `npm run dev`.
 - **Frontend cannot reach the backend:** Start the backend on port 8000, check that `VITE_API_URL` points to it, and restart Vite after changing its environment. The backend allows local development origins by default.
 - **Question answering fails:** Check `/ready` first. The answer route indexes uploaded PDFs in Pinecone before it calls Ollama or Gemini, so an unset `PINECONE_API_KEY` can fail before Gemini is reached. Configure `GEMINI_API_KEY` and a model supported by that key in `GEMINI_MODEL`; authentication, invalid-model, quota, and timeout errors are reported separately.
-- **Embedding or indexing fails:** Check the backend logs for the model-load exception and verify the Render instance has at least 2 GB RAM and outbound access to the public Hugging Face model. Confirm `EMBEDDING_PROVIDER=local`, `EMBEDDING_MODEL=BAAI/bge-base-en-v1.5`, and that the Pinecone index dimension matches `VECTOR_SIZE=768`. `/ready` loads the model and generates an actual probe vector.
+- **Embedding or indexing fails:** Check `/ready` and the backend logs for the embedding check and model-load exception. For `EMBEDDING_PROVIDER=local`, install `Backend/requirements.txt` in the same Python environment that runs Uvicorn so `sentence-transformers` is available; confirm the instance has at least 2 GB RAM and outbound access to the public Hugging Face model. Confirm `EMBEDDING_MODEL=BAAI/bge-base-en-v1.5` and that the Pinecone index dimension matches `VECTOR_SIZE=768`. `/ready` loads the model and generates an actual probe vector.
 - **Question request returns 503:** The backend logs the exception traceback in Render with configured Gemini and Pinecone API keys redacted; the traceback is not returned to the frontend. Check those logs alongside `/ready` rather than treating `/health` as a provider check.
 - **PDF upload or extraction fails:** Check that the file is a valid, unencrypted PDF under 20 MiB and contains selectable text. Scanned PDFs need OCR, which is not currently provided.
 
