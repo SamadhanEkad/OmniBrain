@@ -580,17 +580,14 @@ def answer_document_question(
         # Prepend targeted abstract chunks directly
         retrieved_chunks = list(targeted_section_chunks)
         # Also run search to complement with any specific question aspects
-        try:
-            extra = search_documents(
-                query=clean_question,
-                document_id=document_id,
-                top_k=max(top_k, 3),
-            )
-            for c in extra:
-                if c.get("chunk_id") not in {tc.get("chunk_id") for tc in retrieved_chunks}:
-                    retrieved_chunks.append(c)
-        except Exception:
-            pass
+        extra = search_documents(
+            query=clean_question,
+            document_id=document_id,
+            top_k=max(top_k, 3),
+        )
+        for c in extra:
+            if c.get("chunk_id") not in {tc.get("chunk_id") for tc in retrieved_chunks}:
+                retrieved_chunks.append(c)
 
     # Route: Document-level overview (100-word summaries, teachings, takeaways, conclusions)
     elif category == "document_overview":

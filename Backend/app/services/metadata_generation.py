@@ -7,7 +7,6 @@ from typing import Any, Iterator
 
 import pymupdf
 import requests
-from dotenv import load_dotenv
 
 from app.config import (
     GEMINI_MODEL,
@@ -15,8 +14,6 @@ from app.config import (
     OLLAMA_URL,
 )
 from app.services.answer_generator import get_gemini_client
-
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 

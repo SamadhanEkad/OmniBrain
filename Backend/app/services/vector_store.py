@@ -2,7 +2,6 @@ import argparse
 import json
 import logging
 import math
-import os
 import time
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
@@ -12,8 +11,10 @@ from pinecone import Pinecone, RetryConfig, ServerlessSpec
 from app.config import (
     EMBEDDING_FINGERPRINT,
     PINECONE_API_KEY,
+    PINECONE_CLOUD,
     PINECONE_INDEX_NAME,
     PINECONE_MAX_RETRIES,
+    PINECONE_REGION,
     PINECONE_TIMEOUT_SECONDS,
     VECTOR_SIZE,
 )
@@ -31,8 +32,8 @@ INDEX_NAME = PINECONE_INDEX_NAME
 COLLECTION_NAME = INDEX_NAME
 
 DEFAULT_EMBEDDING_MODEL = EMBEDDING_FINGERPRINT
-DEFAULT_CLOUD = os.getenv("PINECONE_CLOUD", "aws")
-DEFAULT_REGION = os.getenv("PINECONE_REGION", "us-east-1")
+DEFAULT_CLOUD = PINECONE_CLOUD
+DEFAULT_REGION = PINECONE_REGION
 
 # Metadata fields that should be available during retrieval.
 METADATA_FIELDS = (

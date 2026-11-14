@@ -714,6 +714,47 @@ def test_answer_document_question_returns_retrieved_citations(monkeypatch):
     }
 
 
+def test_abstract_question_does_not_hide_retrieval_failures(monkeypatch):
+    document_id = "123e4567-e89b-12d3-a456-426614174000"
+    monkeypatch.setattr(document_qa_service, "ensure_document_indexed", Mock())
+    monkeypatch.setattr(
+        document_qa_service,
+        "load_all_document_chunks",
+        Mock(return_value=[
+            {
+                "document_id": document_id,
+                "chunk_id": "chunk_00001",
+                "page_number": 1,
+                "section_heading": "Abstract",
+                "text": "Abstract: The paper evaluates its proposed method.",
+            }
+        ]),
+    )
+    monkeypatch.setattr(
+        document_qa_service,
+        "load_document_info",
+        Mock(return_value={"filename": "paper.pdf"}),
+    )
+    monkeypatch.setattr(
+        document_qa_service,
+        "search_documents",
+        Mock(
+            side_effect=embedding_service.EmbeddingProviderError(
+                "query embedding unavailable"
+            )
+        ),
+    )
+
+    with pytest.raises(
+        embedding_service.EmbeddingProviderError,
+        match="query embedding unavailable",
+    ):
+        document_qa_service.answer_document_question(
+            document_id,
+            "What does the abstract conclude?",
+        )
+
+
 def test_filename_and_page_count_questions_use_saved_upload_information(
     monkeypatch,
     tmp_path,

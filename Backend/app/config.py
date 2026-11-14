@@ -5,9 +5,8 @@ from dotenv import load_dotenv
 # Project root: OmniBrain/
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
-# Load environment variables from Backend/.env or current working directory
+# Load the backend-local file without searching the process working directory.
 load_dotenv(BACKEND_ROOT / ".env")
-load_dotenv()
 
 # --------------------------------------------------
 # 1. Project directories

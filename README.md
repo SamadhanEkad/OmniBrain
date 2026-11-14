@@ -181,7 +181,7 @@ $env:GEMINI_MODEL = "gemini-3.5-flash"
 
 The code creates the Pinecone index if it does not exist. Its defaults are index `omnibrain-documents`, AWS cloud, region `us-east-1`, and 768 vector dimensions. The current implementation uses Pinecone's default namespace; no configurable namespace is active. The embedding model, vector size, and Pinecone index dimensions must agree.
 
-The backend loads configuration from environment variables and, when present, `Backend/.env` (via `python-dotenv`). `Backend/.env.example` contains local-development placeholders; do not overwrite an existing `.env` or commit real credentials.
+The backend loads configuration from environment variables and, when present, `Backend/.env` (via `python-dotenv`); it does not search the current working directory for another `.env` file. For a new local checkout, copy `Backend/.env.example` to `Backend/.env` if it does not already exist, then replace the placeholder credentials locally. Do not overwrite an existing `.env` or commit real credentials.
 
 ### 4. Start the backend
 
@@ -201,7 +201,9 @@ npm ci
 npm run dev
 ```
 
-The frontend uses `VITE_API_URL` to select the backend address; it defaults to `http://127.0.0.1:8000`. Set that variable before starting Vite only if the backend is at a different address. `VITE_API_BASE_URL` remains supported as a legacy alias.
+The frontend uses `VITE_API_URL` to select the backend address. `VITE_API_BASE_URL` remains supported as a legacy alias.
+
+The tracked `Frontend/.env.development` and `Frontend/.env.production` files provide the local and deployed API URLs. Vite loads the matching file for each mode; Render's `VITE_API_URL` setting takes precedence at build time. The production file contains only the public backend URL, never credentials.
 
 ### 6. Open OmniBrain
 
@@ -253,7 +255,7 @@ The question must contain 1–2000 characters. Each source may include `document
 | `PORT` | HTTP port for the backend | Supplied by Render; do not hardcode it |
 | `VITE_API_URL` | Backend base URL used by the frontend | Local development defaults to `http://127.0.0.1:8000`; required for production builds |
 
-Backend variables are read from the process environment and `Backend/.env` when present. The frontend reads `VITE_API_URL` from its Vite environment, with `VITE_API_BASE_URL` retained as a legacy alias; `Frontend/.env.example` shows the local default. Production frontend code rejects a missing or loopback API URL. Never put credentials in source control or any `VITE_*` variable.
+Backend variables are read from the process environment and `Backend/.env` when present; the backend does not search the current working directory for another `.env` file. The frontend reads `VITE_API_URL` from its mode-specific Vite environment, with `VITE_API_BASE_URL` retained as a legacy alias; the tracked development and production files contain only public API URLs. Production frontend code rejects a missing or loopback API URL. Never put credentials in source control or any `VITE_*` variable.
 
 ## Render deployment
 

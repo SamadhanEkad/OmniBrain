@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run --testTimeout=30000"
+    "test": "vitest run --pool=threads --maxWorkers=1 --testTimeout=30000"
   },
   "dependencies": {
     "katex": "^0.19.0",
