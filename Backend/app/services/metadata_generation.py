@@ -73,7 +73,9 @@ def extract_document_text(
 def _select_representative_pages(
     pdf_path: str | Path,
 ) -> tuple[int, list[dict[str, Any]], dict[str, Any]]:
+    # Unused by the API. Legacy optional helper.
     """
+    Unused by the API. Legacy optional helper.
     Sample representative pages across a PDF for metadata generation.
     Always prioritize the opening pages (title, author, abstract, TOC)
     and closing pages (conclusion, summary).

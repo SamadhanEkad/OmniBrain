@@ -35,7 +35,7 @@ def test_document_embeddings_use_the_local_ollama_provider(
     client.embed.return_value = SimpleNamespace(
         embeddings=[[0.25] * 768],
     )
-    monkeypatch.setattr(embedding_service, "PROCESSED_DIR", tmp_path)
+    monkeypatch.setattr(embedding_service, "PROCESSED_DATA_DIR", tmp_path)
     monkeypatch.setattr(embedding_service, "OLLAMA_CLIENT", client)
     monkeypatch.setattr(embedding_service, "EMBEDDING_PROVIDER", "ollama")
     monkeypatch.setattr(embedding_service, "MODEL_NAME", "nomic-local")
@@ -97,7 +97,7 @@ def test_embeddings_are_batched_and_reused_from_the_valid_cache(
         SimpleNamespace(embeddings=[vector, vector]),
         SimpleNamespace(embeddings=[vector]),
     ]
-    monkeypatch.setattr(embedding_service, "PROCESSED_DIR", tmp_path)
+    monkeypatch.setattr(embedding_service, "PROCESSED_DATA_DIR", tmp_path)
     monkeypatch.setattr(embedding_service, "OLLAMA_CLIENT", client)
     monkeypatch.setattr(embedding_service, "EMBEDDING_BATCH_SIZE", 2)
     monkeypatch.setattr(embedding_service, "EMBEDDING_PROVIDER", "ollama")
@@ -150,10 +150,11 @@ def test_gemini_document_embeddings_use_retrieval_document_task(
     )
     client = Mock()
     client.models.embed_content.return_value = response
-    monkeypatch.setattr(embedding_service, "PROCESSED_DIR", tmp_path)
+    monkeypatch.setattr(embedding_service, "PROCESSED_DATA_DIR", tmp_path)
     monkeypatch.setattr(embedding_service, "get_gemini_client", Mock(return_value=client))
     monkeypatch.setattr(embedding_service, "EMBEDDING_PROVIDER", "gemini")
     monkeypatch.setattr(embedding_service, "MODEL_NAME", "gemini-embedding-001")
+    monkeypatch.setattr(embedding_service, "GEMINI_API_KEY", "test-key")
     monkeypatch.setattr(
         embedding_service,
         "MODEL_FINGERPRINT",
@@ -182,6 +183,7 @@ def test_query_embedding_uses_the_same_gemini_model_and_query_task(monkeypatch):
     monkeypatch.setattr(embedding_service, "get_gemini_client", Mock(return_value=client))
     monkeypatch.setattr(embedding_service, "EMBEDDING_PROVIDER", "gemini")
     monkeypatch.setattr(embedding_service, "MODEL_NAME", "gemini-embedding-001")
+    monkeypatch.setattr(embedding_service, "GEMINI_API_KEY", "test-key")
 
     vector = retrieval_service.embed_query("  What does the PDF say?  ")
 
@@ -326,6 +328,8 @@ def test_gemini_embedding_errors_are_classified_without_provider_details(
     monkeypatch.setattr(embedding_service, "EMBEDDING_PROVIDER", "gemini")
     monkeypatch.setattr(embedding_service, "MODEL_NAME", "test-embedding-model")
     monkeypatch.setattr(embedding_service, "GEMINI_API_KEY", "test-key")
+    if status_code in (429, 503):
+        monkeypatch.setattr(embedding_service.time, "sleep", Mock())
 
     with pytest.raises(exception_type) as exc_info:
         embedding_service.embed_texts(
@@ -334,3 +338,29 @@ def test_gemini_embedding_errors_are_classified_without_provider_details(
         )
 
     assert "private provider detail" not in str(exc_info.value)
+
+
+def test_gemini_embedding_retries_429_then_succeeds(monkeypatch):
+    from google.genai.errors import ClientError
+
+    client = Mock()
+    client.models.embed_content.side_effect = [
+        ClientError(code=429, response_json={"message": "private detail"}),
+        ClientError(code=429, response_json={"message": "private detail"}),
+        SimpleNamespace(
+            embeddings=[SimpleNamespace(values=[0.25] * 768)],
+        ),
+    ]
+    monkeypatch.setattr(embedding_service, "get_gemini_client", Mock(return_value=client))
+    monkeypatch.setattr(embedding_service, "EMBEDDING_PROVIDER", "gemini")
+    monkeypatch.setattr(embedding_service, "MODEL_NAME", "gemini-embedding-001")
+    monkeypatch.setattr(embedding_service, "GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(embedding_service.time, "sleep", Mock())
+
+    vectors = embedding_service.embed_texts(
+        ["test input"],
+        embedding_service.RETRIEVAL_QUERY,
+    )
+
+    assert vectors == [[0.25] * 768]
+    assert client.models.embed_content.call_count == 3

@@ -18,6 +18,7 @@ Features:
 """
 
 import json
+import functools
 import re
 import unicodedata
 from pathlib import Path
@@ -25,18 +26,21 @@ from typing import Any
 
 import tiktoken
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from app.config import PROCESSED_DATA_DIR
 
 
 # --------------------------------------------------
 # 1. Configuration
 # --------------------------------------------------
 
-BACKEND_DIR = Path(__file__).resolve().parents[2]
-PROCESSED_DIR = BACKEND_DIR / "Data" / "processed"
-
 CHUNK_SIZE = 400
 CHUNK_OVERLAP = 60
 TOKEN_ENCODING = "cl100k_base"
+
+
+@functools.lru_cache(maxsize=None)
+def _get_encoding():
+    return tiktoken.get_encoding(TOKEN_ENCODING)
 
 
 # --------------------------------------------------
@@ -225,7 +229,7 @@ def chunk_extracted_json(
 
     # cl100k_base is an approximate token counter for this pipeline.
     # It is not necessarily the embedding model's native tokenizer.
-    encoding = tiktoken.get_encoding(TOKEN_ENCODING)
+    encoding = _get_encoding()
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
@@ -333,7 +337,7 @@ def chunk_extracted_json(
     destination_dir = (
         Path(output_dir).expanduser().resolve()
         if output_dir is not None
-        else PROCESSED_DIR
+        else PROCESSED_DATA_DIR
     )
 
     destination_dir.mkdir(

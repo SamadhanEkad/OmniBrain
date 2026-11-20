@@ -1,12 +1,14 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app import main as main_module
+from app.api import upload as upload_api
 from app.services import answer_generator
 from app.services.answer_generator import (
     GeminiAuthenticationError,
@@ -609,6 +611,78 @@ def test_delete_document_endpoint_also_removes_vectors(monkeypatch):
     remove.assert_called_once_with(document_id)
 
 
+def test_document_processing_status_reports_progress_and_failure(monkeypatch):
+    document_id = "123e4567-e89b-12d3-a456-426614174000"
+    monkeypatch.setattr(
+        upload_api,
+        "load_document_info",
+        Mock(
+            return_value={
+                "document_id": document_id,
+                "processing_status": {
+                    "extraction": {"status": "complete"},
+                    "chunking": {"status": "complete"},
+                    "embedding": {"status": "running"},
+                    "indexing": {"status": "pending"},
+                },
+            }
+        ),
+    )
+
+    response = TestClient(app).get(
+        f"/api/documents/{document_id}/status",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["processing_state"] == "processing"
+    assert response.json()["processing_status"]["embedding"]["status"] == "running"
+
+    monkeypatch.setattr(
+        upload_api,
+        "load_document_info",
+        Mock(
+            return_value={
+                "document_id": document_id,
+                "processing_status": {
+                    "extraction": {"status": "complete"},
+                    "chunking": {"status": "complete"},
+                    "embedding": {"status": "failed", "error": "RuntimeError"},
+                    "indexing": {"status": "pending"},
+                },
+            }
+        ),
+    )
+
+    response = TestClient(app).get(
+        f"/api/documents/{document_id}/status",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["processing_state"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_upload_enqueues_processing_for_each_accepted_pdf(monkeypatch):
+    document_id = "123e4567-e89b-12d3-a456-426614174000"
+    monkeypatch.setattr(
+        upload_api,
+        "save_pdfs",
+        AsyncMock(
+            return_value={
+                "uploaded": [{"document_id": document_id}],
+                "failed": [],
+            }
+        ),
+    )
+    tasks = BackgroundTasks()
+
+    result = await upload_api.upload_documents(tasks, [])
+
+    assert result["uploaded"][0]["document_id"] == document_id
+    assert len(tasks.tasks) == 1
+    assert tasks.tasks[0].args == (document_id,)
+
+
 def test_document_is_indexed_once_and_existing_index_is_reused(
     monkeypatch,
     tmp_path,
@@ -617,6 +691,7 @@ def test_document_is_indexed_once_and_existing_index_is_reused(
     (tmp_path / f"{document_id}.pdf").touch()
     monkeypatch.setattr(document_qa_service, "RAW_DATA_DIR", tmp_path)
     monkeypatch.setattr(file_service, "RAW_DATA_DIR", tmp_path)
+    monkeypatch.setattr(file_service, "PROCESSED_DATA_DIR", tmp_path)
 
     client = Mock()
     index_mock = Mock()
@@ -646,6 +721,20 @@ def test_document_is_indexed_once_and_existing_index_is_reused(
 
     document_qa_service.ensure_document_indexed(document_id)
 
+    processing_status = file_service.load_document_info(document_id)[
+        "processing_status"
+    ]
+    assert {
+        stage: value["status"]
+        for stage, value in processing_status.items()
+        if stage != "metadata"
+    } == {
+        "extraction": "complete",
+        "chunking": "complete",
+        "embedding": "complete",
+        "indexing": "complete",
+    }
+
     extract.assert_called_once()
     chunk.assert_called_once_with("extracted.json", filename=None)
     embed.assert_called_once_with(document_id)
@@ -655,7 +744,9 @@ def test_document_is_indexed_once_and_existing_index_is_reused(
 
     client.reset_mock()
     index_mock.reset_mock()
-    client.list_indexes.return_value = [SimpleNamespace(name="omnibrain-documents")]
+    client.list_indexes.return_value = [
+        SimpleNamespace(name=vector_store.INDEX_NAME)
+    ]
     client.describe_index.return_value = SimpleNamespace(
         dimension=768,
         metric="cosine",
@@ -892,7 +983,18 @@ def test_metadata_generation_failure_is_saved_and_reported_gracefully(
     generate_metadata.assert_called_once()
 
 
-def test_chunker_keeps_chunks_from_every_page(tmp_path):
+def test_chunker_keeps_chunks_from_every_page(monkeypatch, tmp_path):
+    class FakeEncoding:
+        def encode(self, text):
+            return text.split()
+
+        def decode(self, ids):
+            return " ".join(ids)
+
+    monkeypatch.setattr(
+        "app.services.text_chunker._get_encoding",
+        lambda: FakeEncoding(),
+    )
     document_id = "123e4567-e89b-12d3-a456-426614174000"
     source = tmp_path / "extracted.json"
     source.write_text(

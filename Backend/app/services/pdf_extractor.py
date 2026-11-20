@@ -15,15 +15,9 @@ from pathlib import Path
 from typing import Any
 
 import pymupdf
+from app.config import PROCESSED_DATA_DIR
 
 logger = logging.getLogger(__name__)
-
-# Backend directory: OmniBrain/Backend/
-BACKEND_DIR = Path(__file__).resolve().parents[2]
-
-# Default location for extracted text
-PROCESSED_DIR = BACKEND_DIR / "Data" / "processed"
-
 
 def extract_pdf_text(
     pdf_path: str | Path,
@@ -62,7 +56,7 @@ def extract_pdf_text(
     destination_dir = (
         Path(output_dir).expanduser().resolve()
         if output_dir is not None
-        else PROCESSED_DIR
+        else PROCESSED_DATA_DIR
     )
 
     pages: list[dict[str, Any]] = []

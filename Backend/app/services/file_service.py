@@ -10,6 +10,7 @@ from fastapi import HTTPException, UploadFile
 
 from app.config import (
     RAW_DATA_DIR,
+    PROCESSED_DATA_DIR,
     MAX_UPLOAD_SIZE_BYTES,
     MAX_FILES_PER_UPLOAD,
 )
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Serializes uploads so two simultaneous requests don't write at the same time.
 _upload_lock = asyncio.Lock()
+PROCESS_INSTANCE_ID = str(uuid4())
 
 
 def _document_info_path(document_id: str) -> Path:
@@ -94,7 +96,10 @@ def update_processing_stage(
     if not isinstance(stages, dict):
         stages = {}
 
-    stage_info: dict[str, Any] = {"status": status}
+    stage_info: dict[str, Any] = {
+        "status": status,
+        "process_instance": PROCESS_INSTANCE_ID,
+    }
     if error:
         stage_info["error"] = error
     stages[stage] = stage_info
@@ -257,7 +262,7 @@ async def _save_single_pdf(file: UploadFile) -> dict:
         # 7. Move the validated PDF to permanent storage
         temp_path.replace(file_path)
 
-        save_document_info(
+        info = save_document_info(
             document_id,
             filename=file.filename,
             page_count=page_count,
@@ -277,7 +282,9 @@ async def _save_single_pdf(file: UploadFile) -> dict:
             "filename": file.filename,
             "status": "uploaded",
             "page_count": page_count,
-            "size_bytes": size
+            "size_bytes": size,
+            "processing_state": "queued",
+            "processing_status": info["processing_status"],
         }
 
     finally:
