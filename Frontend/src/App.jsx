@@ -159,13 +159,58 @@ function formatBytes(bytes) {
 }
 
 function pickDocument(result) {
-  return {
+  const document = {
     document_id: result.document_id,
     filename: result.filename,
     status: result.status,
     page_count: result.page_count,
     size_bytes: result.size_bytes,
+    processing_state:
+      result.processing_state ||
+      (result.processing_status ? "queued" : "ready"),
+    processing_status: result.processing_status || null,
   };
+  return {
+    ...document,
+    processing_label: getProcessingLabel(document),
+  };
+}
+
+function getProcessingState(document) {
+  if (document.processing_state) return document.processing_state;
+  if (!document.processing_status) return "ready";
+
+  const stages = document.processing_status;
+  const required = ["extraction", "chunking", "embedding", "indexing"];
+  const statuses = required.map((stage) => stages[stage]?.status);
+
+  if (statuses.includes("failed")) return "failed";
+  if (stages.indexing?.status === "complete" || statuses.every((status) => status === "complete")) {
+    return "ready";
+  }
+  return statuses.includes("running") ? "processing" : "queued";
+}
+
+function getProcessingLabel(document) {
+  const state = getProcessingState(document);
+  if (state === "ready") return "Ready";
+  if (state === "failed") return "Processing failed";
+
+  const stages = document.processing_status || {};
+  const activeStage = ["extraction", "chunking", "embedding", "indexing"].find(
+    (stage) => stages[stage]?.status === "running",
+  );
+  const labels = {
+    extraction: "Extracting text",
+    chunking: "Preparing text",
+    embedding: "Creating embeddings",
+    indexing: "Indexing",
+  };
+  return activeStage ? labels[activeStage] : "Queued";
+}
+
+function isProcessingDocument(document) {
+  return ["queued", "processing"].includes(getProcessingState(document));
 }
 
 function Welcome({ documents }) {
@@ -205,6 +250,7 @@ function ChatWorkspace({
   onAsk,
   isAnswering,
   isUploading,
+  isProcessingDocuments,
   uploadError,
   onUpload,
   onRetryAnswer,
@@ -225,10 +271,13 @@ function ChatWorkspace({
     hasDocuments &&
     Boolean(question.trim()) &&
     !isAnswering &&
-    !isUploading;
+    !isUploading &&
+    !isProcessingDocuments;
 
   let scopeHint = "Attach a PDF to begin";
-  if (documents.length === 1) {
+  if (isProcessingDocuments) {
+    scopeHint = "Preparing your documents…";
+  } else if (documents.length === 1) {
     scopeHint = "Answers use the active PDF";
   } else if (documents.length > 1 && selectedIds.length > 0) {
     scopeHint = `Answers use ${selectedIds.length} selected PDF${selectedIds.length === 1 ? "" : "s"}`;
@@ -360,7 +409,7 @@ function ChatWorkspace({
                 : "Upload a document to start asking questions"
             }
             value={question}
-            disabled={!hasDocuments || isAnswering || isUploading}
+            disabled={!hasDocuments || isAnswering || isUploading || isProcessingDocuments}
             onChange={(event) => setQuestion(event.target.value)}
             onKeyDown={handleKeyDown}
           />
@@ -569,14 +618,17 @@ function DocumentsView({
                     </>
                   )}
 
-                  {doc.status || "Status unavailable"}
+                  {getProcessingLabel(doc)}
                 </span>
 
                 <small>Document ID: {doc.document_id}</small>
               </div>
 
-              <span className="document-status">
-                <i /> {doc.status || "Unknown"}
+              <span
+                className={`document-status document-status--${getProcessingState(doc)}`}
+                role="status"
+              >
+                <i /> {getProcessingLabel(doc)}
               </span>
 
               <button
@@ -712,7 +764,6 @@ export default function App() {
   const workspaceRef = useRef(workspace);
   const [activeView, setActiveView] = useState("chat");
   const [backendStatus, setBackendStatus] = useState("checking");
-  const [backendError, setBackendError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isAnswering, setIsAnswering] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
@@ -735,6 +786,15 @@ export default function App() {
 
   const documents = activeConversation?.documents || [];
   const selectedIds = activeConversation?.selectedIds || [];
+  const activeDocumentIds =
+    selectedIds.length > 0
+      ? selectedIds
+      : documents.map((document) => document.document_id);
+  const isProcessingDocuments = documents.some(
+    (document) =>
+      activeDocumentIds.includes(document.document_id) &&
+      isProcessingDocument(document),
+  );
 
   const commitWorkspace = useCallback((update) => {
     const current = workspaceRef.current;
@@ -779,26 +839,18 @@ export default function App() {
 
     healthRequest.current = api.checkHealth()
       .then((result) => {
-        const status = result?.status === "healthy" ? "online" : "offline";
+        const status = result?.status === "healthy" ? "online" : "degraded";
 
         if (mounted.current) {
           setBackendStatus(status);
-          setBackendError(
-            status === "online"
-              ? ""
-              : "Health check returned an unexpected response. Check the backend /health endpoint.",
-          );
         }
 
         return status;
       })
       .catch((error) => {
         if (mounted.current) {
-          setBackendStatus("offline");
-          setBackendError(
-            error instanceof Error
-              ? error.message
-              : "The health check failed. Try again.",
+          setBackendStatus(
+            error instanceof ApiError && error.status ? "degraded" : "offline",
           );
         }
 
@@ -815,27 +867,107 @@ export default function App() {
     mounted.current = true;
 
     const markOffline = () => setBackendStatus("offline");
-    const markOnline = () => {
-      setBackendStatus("online");
-      setBackendError("");
+    const markReachable = (event) => {
+      setBackendStatus(event.detail?.status || "online");
     };
 
     window.addEventListener("omnibrain:backend-unavailable", markOffline);
-    window.addEventListener("omnibrain:backend-reachable", markOnline);
+    window.addEventListener("omnibrain:backend-reachable", markReachable);
+    window.addEventListener("online", refreshHealth);
 
     refreshHealth();
 
     const interval = window.setInterval(refreshHealth, 30_000);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refreshHealth();
+    };
+    document.addEventListener("visibilitychange", refreshWhenVisible);
 
     return () => {
       mounted.current = false;
 
       window.removeEventListener("omnibrain:backend-unavailable", markOffline);
-      window.removeEventListener("omnibrain:backend-reachable", markOnline);
+      window.removeEventListener("omnibrain:backend-reachable", markReachable);
+      window.removeEventListener("online", refreshHealth);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
 
       window.clearInterval(interval);
     };
   }, [refreshHealth]);
+
+  useEffect(() => {
+    if (
+      backendStatus === "checking" ||
+      backendStatus === "offline" ||
+      !workspace.conversations.some((conversation) =>
+        conversation.documents.some(isProcessingDocument),
+      )
+    ) {
+      return undefined;
+    }
+
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      const conversations = workspaceRef.current.conversations;
+      const pendingDocuments = conversations.flatMap((conversation) =>
+        conversation.documents
+          .filter(isProcessingDocument)
+          .map((item) => ({ conversationId: conversation.id, item })),
+      );
+
+      const updates = await Promise.all(
+        pendingDocuments.map(async ({ conversationId, item }) => {
+          try {
+            return {
+              conversationId,
+              documentId: item.document_id,
+              result: await api.getDocumentStatus(item.document_id),
+            };
+          } catch (error) {
+            if (
+              error instanceof ApiError &&
+              error.status === 404 &&
+              message ===
+                "This document is no longer available on the server. Please upload it again."
+            ) {
+              return {
+                conversationId,
+                documentId: item.document_id,
+                result: {
+                  processing_state: "failed",
+                  processing_status: item.processing_status,
+                },
+              };
+            }
+            return null;
+          }
+        }),
+      );
+
+      if (!active) return;
+
+      for (const update of updates) {
+        if (!update) continue;
+        updateConversation(update.conversationId, (conversation) => ({
+          documents: conversation.documents.map((item) =>
+            item.document_id === update.documentId
+              ? {
+                  ...item,
+                  processing_state: update.result.processing_state,
+                  processing_status: update.result.processing_status,
+                  processing_label: getProcessingLabel(update.result),
+                }
+              : item,
+          ),
+        }));
+      }
+    }, 2_000);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [backendStatus, updateConversation, workspace.conversations]);
 
   useEffect(() => {
     try {
@@ -861,6 +993,7 @@ export default function App() {
 
     answerSequence.current.invalidate();
     answerRequest.current = null;
+    pending.controller.abort();
     setIsAnswering(false);
 
     updateConversation(pending.conversationId, (conversation) => ({
@@ -1123,8 +1256,21 @@ export default function App() {
       knownIds.includes(id),
     );
     const documentIds = ticked.length > 0 ? ticked : knownIds;
+    if (
+      conversation.documents
+        .filter((document) => documentIds.includes(document.document_id))
+        .some(isProcessingDocument)
+    ) {
+      return;
+    }
 
-    answerRequest.current = { assistantId, conversationId, question };
+    const controller = new AbortController();
+    answerRequest.current = {
+      assistantId,
+      conversationId,
+      question,
+      controller,
+    };
 
     setIsAnswering(true);
     setActiveView("chat");
@@ -1162,7 +1308,11 @@ export default function App() {
     });
 
     try {
-      const result = await api.answerQuestion(documentIds, question);
+      const result = await api.answerQuestion(
+        documentIds,
+        question,
+        controller.signal,
+      );
 
       if (!answerSequence.current.isCurrent(generation)) return;
 
@@ -1208,6 +1358,24 @@ export default function App() {
         error instanceof Error
           ? error.message
           : "The question could not be answered.";
+
+      if (error instanceof ApiError && error.status === 404) {
+        updateConversation(conversationId, (item) => ({
+          selectedIds: (item.selectedIds || []).filter(
+            (id) => !documentIds.includes(id),
+          ),
+          documents: (item.documents || []).map((document) =>
+            documentIds.includes(document.document_id)
+              ? {
+                  ...document,
+                  missing: true,
+                  processing_state: "missing",
+                  processing_label: "missing – upload again",
+                }
+              : document,
+          ),
+        }));
+      }
 
       updateConversation(conversationId, (item) => ({
         messages: item.messages.map((current) =>
@@ -1502,6 +1670,7 @@ export default function App() {
             }
             isAnswering={isAnswering}
             isUploading={isUploading}
+            isProcessingDocuments={isProcessingDocuments}
             uploadError={
               uploadError?.conversationId === activeConversation.id
                 ? uploadError.message
@@ -1548,14 +1717,14 @@ export default function App() {
         </footer>
       </div>
 
-      {(notice || storageError || backendError) && (
+      {(notice || storageError) && (
         <div
-          className={`toast ${storageError || backendError ? "toast--error" : ""}`}
-          role={storageError || backendError ? "alert" : "status"}
-          aria-live={storageError || backendError ? "assertive" : "polite"}
+          className={`toast ${storageError ? "toast--error" : ""}`}
+          role={storageError ? "alert" : "status"}
+          aria-live={storageError ? "assertive" : "polite"}
         >
           <Info size={15} />
-          <span>{storageError || backendError || notice}</span>
+          <span>{storageError || notice}</span>
 
           {storageError && (
             <button

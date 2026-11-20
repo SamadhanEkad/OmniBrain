@@ -88,8 +88,8 @@ The equation is $E=mc^2$.
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Connected" })).toBeTruthy());
-    expect(screen.getAllByRole("button", { name: "Connected" })).toHaveLength(1);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Online" })).toBeTruthy());
+    expect(screen.getAllByRole("button", { name: "Online" })).toHaveLength(1);
     await uploadPdf(user);
     expect(await screen.findAllByText("notes.pdf")).toHaveLength(2);
     await ask(user, "What is the key finding?");
@@ -125,7 +125,7 @@ The equation is $E=mc^2$.
     );
   });
 
-  it("shows the health-check error when the backend cannot be reached", async () => {
+  it("shows offline status without an intrusive error popup when the backend cannot be reached", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockRejectedValue(new TypeError("Failed to fetch")),
@@ -133,11 +133,8 @@ The equation is $E=mc^2$.
 
     render(<App />);
 
-    expect(await screen.findByRole("button", { name: "Offline · recheck" })).toBeTruthy();
-    const healthError = await screen.findByRole("alert");
-    expect(healthError.textContent).toContain("Could not reach OmniBrain at");
-    expect(healthError.textContent).toContain(window.location.origin);
-    expect(healthError.textContent).toContain("CORS_ORIGINS");
+    expect(await screen.findByRole("button", { name: "Offline" })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("keeps the backend reachable when an API route returns a server error", async () => {
@@ -158,10 +155,11 @@ The equation is $E=mc^2$.
         ),
       ).rejects.toMatchObject({
         status: 503,
-        message: "Pinecone is not configured.",
+        message: "Document processing is temporarily unavailable. Please try again shortly.",
       });
 
       expect(reachable).toHaveBeenCalledOnce();
+      expect(reachable.mock.calls[0][0].detail.status).toBe("degraded");
       expect(unavailable).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener("omnibrain:backend-unavailable", unavailable);
@@ -309,6 +307,46 @@ The equation is $E=mc^2$.
 
     expect(await screen.findByText("I couldn’t complete that answer.")).toBeTruthy();
     expect(screen.getByText("No relevant passages were found in this document.")).toBeTruthy();
+  });
+
+  it("marks a document missing after the backend says it is unavailable", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/health") return jsonResponse({ status: "healthy" });
+      if (url.pathname === "/api/documents/upload") {
+        return jsonResponse(uploadResult("doc-missing", "missing.pdf"));
+      }
+      if (url.pathname === "/api/documents/answer") {
+        return jsonResponse(
+          {
+            detail:
+              "This document is no longer available on the server. Please upload it again.",
+          },
+          404,
+        );
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await uploadPdf(user, "missing.pdf");
+    await ask(user, "What is in this PDF?");
+
+    expect(
+      await screen.findByText(
+        "This document is no longer available on the server. Please upload it again.",
+      ),
+    ).toBeTruthy();
+    const saved = JSON.parse(
+      localStorage.getItem("omnibrain.workspace.v1"),
+    );
+    expect(saved.conversations[0].documents[0].missing).toBe(true);
+    expect(saved.conversations[0].documents[0].processing_label).toBe(
+      "missing – upload again",
+    );
+    expect(saved.conversations[0].selectedIds).not.toContain("doc-missing");
   });
 
   it("hides answers whose source metadata identifies a different document", async () => {
