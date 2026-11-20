@@ -111,6 +111,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = (
     os.getenv("GEMINI_MODEL", "").strip() or "gemini-3.5-flash"
 ).strip()
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
 
 
 # --------------------------------------------------

@@ -245,6 +245,7 @@ The question must contain 1–2000 characters. Each source may include `document
 | `PINECONE_REGION` | Region used when creating the index | `us-east-1` |
 | `GEMINI_API_KEY` | Authenticates Gemini answer generation | Required in production |
 | `GEMINI_MODEL` | Gemini answer-generation model | Defaults to `gemini-3.5-flash`; readiness verifies it is available to the configured API key |
+| `GEMINI_FALLBACK_MODEL` | Optional answer-generation fallback | Tried once after three 503 responses from `GEMINI_MODEL`; must be available to the same API key |
 | `EMBEDDING_PROVIDER` | Provider used for both document and query embeddings | `gemini` by default; optional `local` or `ollama` |
 | `EMBEDDING_MODEL` | Model used for both document and query embeddings | `gemini-embedding-001` by default; provider-compatible model if using local or Ollama |
 | `OLLAMA_URL` | Local Ollama API address | `http://localhost:11434`; never required on Render |

@@ -155,7 +155,7 @@ The equation is $E=mc^2$.
         ),
       ).rejects.toMatchObject({
         status: 503,
-        message: "Document processing is temporarily unavailable. Please try again shortly.",
+        message: "Pinecone is not configured.",
       });
 
       expect(reachable).toHaveBeenCalledOnce();
@@ -307,6 +307,77 @@ The equation is $E=mc^2$.
 
     expect(await screen.findByText("I couldn’t complete that answer.")).toBeTruthy();
     expect(screen.getByText("No relevant passages were found in this document.")).toBeTruthy();
+  });
+
+  it("shows a preparing status while uploaded documents are still indexing", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/health") return jsonResponse({ status: "healthy" });
+      if (url.pathname === "/api/documents/upload") {
+        const result = uploadResult("doc-processing", "processing.pdf");
+        result.uploaded[0].processing_state = "processing";
+        result.uploaded[0].processing_status = {
+          extraction: { status: "running" },
+        };
+        return jsonResponse(result);
+      }
+      if (url.pathname.endsWith("/status")) {
+        return jsonResponse({
+          processing_state: "processing",
+          processing_status: { extraction: { status: "running" } },
+        });
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await uploadPdf(user, "processing.pdf");
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Preparing your document…",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Ask about your documents").disabled).toBe(
+      true,
+    );
+  });
+
+  it("shows backend service details and re-enables questions after an answer failure", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/health") return jsonResponse({ status: "healthy" });
+      if (url.pathname === "/api/documents/upload") {
+        return jsonResponse(uploadResult("doc-busy", "busy.pdf"));
+      }
+      if (url.pathname === "/api/documents/answer") {
+        return jsonResponse(
+          { detail: "The AI service is busy. Please try again in a minute." },
+          503,
+        );
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await uploadPdf(user, "busy.pdf");
+    await ask(user, "What does this PDF say?");
+
+    expect(
+      await screen.findByText(
+        "The AI service is busy. Please try again in a minute.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Ask about your documents").disabled).toBe(
+      false,
+    );
+    expect(screen.getByRole("button", { name: "Send question" }).disabled).toBe(
+      true,
+    );
   });
 
   it("marks a document missing after the backend says it is unavailable", async () => {

@@ -334,9 +334,12 @@ def test_gemini_provider_errors_are_classified_safely(
     from google.genai.errors import ClientError
 
     mock_client = Mock()
-    mock_client.models.generate_content.side_effect = ClientError(
+    error = ClientError(
         code=status_code,
         response_json={"message": "provider response must not reach clients"},
+    )
+    mock_client.models.generate_content.side_effect = (
+        [error, error, error] if status_code == 429 else error
     )
     monkeypatch.setattr(
         answer_generator,
@@ -348,12 +351,101 @@ def test_gemini_provider_errors_are_classified_safely(
         "DEFAULT_GEMINI_MODEL",
         "gemini-3.6-flash",
     )
+    monkeypatch.setattr(answer_generator, "GEMINI_FALLBACK_MODEL", "")
+    monkeypatch.setattr(answer_generator.time, "sleep", Mock())
 
     with pytest.raises(exception_type):
         answer_generator.generate_answer(
             "What does the document say?",
             [{"page_number": 1, "text": "The answer evidence."}],
         )
+    assert mock_client.models.generate_content.call_count == (
+        3 if status_code == 429 else 1
+    )
+
+
+def test_gemini_answer_retries_503_and_then_succeeds(monkeypatch):
+    from google.genai.errors import ClientError
+
+    mock_client = Mock()
+    mock_client.models.generate_content.side_effect = [
+        ClientError(code=503, response_json={"message": "temporary"}),
+        ClientError(code=503, response_json={"message": "temporary"}),
+        SimpleNamespace(text="Recovered answer."),
+    ]
+    monkeypatch.setattr(
+        answer_generator,
+        "get_gemini_client",
+        Mock(return_value=mock_client),
+    )
+    monkeypatch.setattr(answer_generator, "GEMINI_FALLBACK_MODEL", "")
+    sleep = Mock()
+    monkeypatch.setattr(answer_generator.time, "sleep", sleep)
+
+    assert answer_generator.generate_answer(
+        "What is the finding?",
+        [{"page_number": 1, "text": "The finding is supported by evidence."}],
+    ) == "Recovered answer."
+    assert mock_client.models.generate_content.call_count == 3
+    assert sleep.call_args_list == [((2,),), ((4,),)]
+
+
+def test_gemini_answer_503_exhaustion_is_friendly(monkeypatch):
+    from google.genai.errors import ClientError
+
+    mock_client = Mock()
+    mock_client.models.generate_content.side_effect = [
+        ClientError(code=503, response_json={"message": "temporary"})
+        for _ in range(3)
+    ]
+    monkeypatch.setattr(
+        answer_generator,
+        "get_gemini_client",
+        Mock(return_value=mock_client),
+    )
+    monkeypatch.setattr(answer_generator, "GEMINI_FALLBACK_MODEL", "")
+    monkeypatch.setattr(answer_generator.time, "sleep", Mock())
+
+    with pytest.raises(
+        GeminiUnavailableError,
+        match="The AI service is busy. Please try again in a minute.",
+    ):
+        answer_generator.generate_answer(
+            "What is the finding?",
+            [{"page_number": 1, "text": "The finding is supported by evidence."}],
+        )
+    assert mock_client.models.generate_content.call_count == 3
+
+
+def test_gemini_answer_503_uses_fallback_model_once(monkeypatch):
+    from google.genai.errors import ClientError
+
+    mock_client = Mock()
+    mock_client.models.generate_content.side_effect = [
+        ClientError(code=503, response_json={"message": "temporary"})
+        for _ in range(3)
+    ] + [SimpleNamespace(text="Fallback answer.")]
+    monkeypatch.setattr(
+        answer_generator,
+        "get_gemini_client",
+        Mock(return_value=mock_client),
+    )
+    monkeypatch.setattr(answer_generator, "DEFAULT_GEMINI_MODEL", "primary-model")
+    monkeypatch.setattr(
+        answer_generator,
+        "GEMINI_FALLBACK_MODEL",
+        "fallback-model",
+    )
+    monkeypatch.setattr(answer_generator.time, "sleep", Mock())
+
+    assert answer_generator.generate_answer(
+        "What is the finding?",
+        [{"page_number": 1, "text": "The finding is supported by evidence."}],
+    ) == "Fallback answer."
+    assert [
+        call.kwargs["model"]
+        for call in mock_client.models.generate_content.call_args_list
+    ] == ["primary-model", "primary-model", "primary-model", "fallback-model"]
 
 
 def test_gemini_timeout_is_reported_as_a_timeout(monkeypatch):

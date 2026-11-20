@@ -63,3 +63,16 @@
   vectors are incompatible with the Gemini embedding fingerprint.
 - On the free Render plan, expect uploaded PDFs to disappear after restarts;
   use a paid persistent disk or `OMNIBRAIN_DATA_DIR` for durable storage.
+
+## Ask flow stabilization
+
+- `Backend/scripts/debug_ask.py` creates, uploads, asks about, and deletes a
+  generated PDF without exposing credentials.
+- `Backend/app/services/answer_generator.py` retries Gemini 429/503 responses
+  up to three attempts and supports an optional fallback model after primary
+  model 503 failures.
+- `Frontend/src/services/api.js` retains backend error details in chat bubbles;
+  the chat welcome state shows when uploaded PDFs are still being prepared.
+- The diagnostic API flow returned HTTP 200 with a grounded answer and
+  `page_number: 1`; deletion returned HTTP 200.
+- Targeted Gemini tests: 16 passed. Frontend tests: 10 passed.

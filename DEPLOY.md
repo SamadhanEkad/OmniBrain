@@ -22,6 +22,7 @@
 | `PINECONE_REGION` | Pinecone region setting; Blueprint: `us-east-1` |
 | `GEMINI_API_KEY` | Google AI Studio API key |
 | `GEMINI_MODEL` | A model available to the Gemini API key; Phase 4 used `gemini-3.5-flash` |
+| `GEMINI_FALLBACK_MODEL` | Optional; a model available to the same key, tried after three primary-model 503 responses |
 | `EMBEDDING_PROVIDER` | Blueprint: `gemini` |
 | `EMBEDDING_MODEL` | Blueprint: `gemini-embedding-001` |
 | `VECTOR_SIZE` | Blueprint: `768` |

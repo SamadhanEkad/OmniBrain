@@ -213,8 +213,9 @@ function isProcessingDocument(document) {
   return ["queued", "processing"].includes(getProcessingState(document));
 }
 
-function Welcome({ documents }) {
+function Welcome({ documents, isProcessingDocuments = false }) {
   const count = documents.length;
+  const isPreparing = count > 0 && isProcessingDocuments;
 
   return (
     <div className="welcome-state">
@@ -229,17 +230,23 @@ function Welcome({ documents }) {
       <h1>
         {count === 0
           ? "Master Your Documents in Seconds."
-          : count === 1
-            ? "Your document is ready."
-            : `Your ${count} documents are ready.`}
+          : isPreparing
+            ? count === 1
+              ? "Preparing your document…"
+              : "Preparing your documents…"
+            : count === 1
+              ? "Your document is ready."
+              : `Your ${count} documents are ready.`}
       </h1>
 
       <p className="welcome-description">
-        {count === 0
-          ? `Upload up to ${MAX_FILES} PDFs at a time, ask what you need, and get answers backed by real page references.`
-          : count === 1
-            ? "Ask anything about it below. Answers are based on passages retrieved from your PDF and may not cover every page."
-            : "Ask anything below. Answers name the PDF and page they came from. Pick specific PDFs to narrow the search."}
+        {isPreparing
+          ? "Your PDFs are being indexed. You can ask a question as soon as processing finishes."
+          : count === 0
+            ? `Upload up to ${MAX_FILES} PDFs at a time, ask what you need, and get answers backed by real page references.`
+            : count === 1
+              ? "Ask anything about it below. Answers are based on passages retrieved from your PDF and may not cover every page."
+              : "Ask anything below. Answers name the PDF and page they came from. Pick specific PDFs to narrow the search."}
       </p>
     </div>
   );
@@ -323,7 +330,10 @@ function ChatWorkspace({
         {!hasDocuments ? (
           <Welcome documents={[]} />
         ) : messages.length === 0 ? (
-          <Welcome documents={documents} />
+          <Welcome
+            documents={documents}
+            isProcessingDocuments={isProcessingDocuments}
+          />
         ) : (
           <div className="message-list">
             {messages.map((message) => (

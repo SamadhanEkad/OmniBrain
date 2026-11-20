@@ -147,11 +147,18 @@ async function request(
         );
       }
 
-      const message =
-        response.status === 429
+      const hasBackendDetail =
+        body &&
+        typeof body === "object" &&
+        (typeof body.detail === "string" ||
+          typeof body.message === "string" ||
+          Array.isArray(body.detail));
+      const message = hasBackendDetail
+        ? getErrorMessage(body, response.status)
+        : response.status === 429
           ? "The AI service is busy. Please wait a moment before trying again."
           : response.status === 503
-            ? "Document processing is temporarily unavailable. Please try again shortly."
+            ? "The service is temporarily unavailable. Please try again shortly."
             : response.status === 504
               ? "This request took too long to complete. Please try again shortly."
               : response.status >= 500
