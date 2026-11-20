@@ -8,6 +8,8 @@
 - `Backend/app/config.py` - `OMNIBRAIN_DATA_DIR`, Gemini default, Gemini index default.
 - `Backend/app/services/embedding_service.py` - Canonical processed directory,
   Gemini quota retry/backoff, and embedding isolation fixes.
+- `Backend/app/services/answer_generator.py` - Transient Gemini 429/503 retry,
+  friendly exhausted-retry errors, and optional fallback model.
 - `Backend/app/services/file_service.py` - Processed-directory config export.
 - `Backend/app/services/metadata_generation.py` - Legacy-helper comment.
 - `Backend/app/services/pdf_extractor.py` - Canonical processed directory.
@@ -17,14 +19,17 @@
 - `Backend/requirements.txt` - Removed `sentence-transformers`.
 - `Backend/requirements-local-embeddings.txt` - Optional local embedding extras.
 - `Backend/scripts/smoke_test.py` - Local API end-to-end smoke test.
+- `Backend/scripts/debug_ask.py`, `DEBUG_ASK.md` - Evidence-based PDF ask
+  reproduction and root-cause findings.
 - `Backend/tests/conftest.py` - Autouse environment isolation.
 - `Backend/tests/test_data_dirs.py` - Data-directory test coverage.
 - `Backend/tests/test_document_qa.py` - Index/test fixes and chunker isolation.
 - `Backend/tests/test_embedding_service.py` - Gemini test isolation and retry test.
 - `Frontend/src/App.jsx` - Missing-document state handling.
 - `Frontend/src/components/DocumentPanel.jsx` - Missing-document status label.
-- `Frontend/src/services/api.js` - Network error includes configured API URL.
-- `Frontend/tests/App.test.jsx` - Missing-document state test.
+- `Frontend/src/services/api.js` - Preserves backend answer errors.
+- `Frontend/tests/App.test.jsx` - Retry, answer-error, preparation, and
+  post-delete history coverage.
 - `README.md` - Gemini and Render documentation updates.
 - `render.yaml` - Backend and frontend Render Blueprint.
 - `DEPLOY.md` - Render dashboard deployment instructions.
@@ -44,25 +49,26 @@
 - Smoke indexing: document extraction, chunking, Gemini embeddings, and Pinecone
   upsert passed. Final answer generation was blocked by Gemini 503
   "high demand" responses from the configured answer model.
-- Secret scan: 0 actual secret matches in tracked working files and 0 in
-  `git log -p --all`.
+- Secret scan: real credentials were found only in the ignored, untracked
+  `Backend/.env`; values were withheld. No secret-pattern matches were found
+  in `git log --all`.
 - Tracked-file inventory: no `.env`, PDF, or `Backend/Data` files are tracked;
   allowed environment examples and public frontend environment files remain.
 
-## MANUAL STEPS FOR ME
+## WHAT I MUST DO MANUALLY
 
-- Confirm or create the `omnibrain-documents-gemini` Pinecone index with 768
-  dimensions and cosine metric.
-- Set Render secrets: `PINECONE_API_KEY`, `GEMINI_API_KEY`, and
-  `CORS_ORIGINS`.
-- Set the frontend `VITE_API_URL` to the real `omnibrain-backend` Render URL.
-- Set `GEMINI_MODEL` to a model available to the configured API key.
-- Deploy the Blueprint, verify `/health` and `/ready`, then trigger the frontend
-  deploy.
-- Re-upload existing PDFs after deployment because old local files and BGE
-  vectors are incompatible with the Gemini embedding fingerprint.
-- On the free Render plan, expect uploaded PDFs to disappear after restarts;
-  use a paid persistent disk or `OMNIBRAIN_DATA_DIR` for durable storage.
+- No required `Backend/.env` model change: `gemini-3.5-flash` was verified for
+  the configured key. Optionally set `GEMINI_FALLBACK_MODEL` only after
+  confirming that model is available to the same key; do not overwrite `.env`.
+- In Render, set `PINECONE_API_KEY`, `GEMINI_API_KEY`, and `CORS_ORIGINS` to
+  the real frontend origin. Confirm the Pinecone index is 768-dimensional with
+  cosine metric.
+- Set the frontend Render `VITE_API_URL` to the real backend URL.
+- Merge and push `stabilize-render`, redeploy the Blueprint, and verify
+  `/health` and `/ready`.
+- Re-upload PDFs after deployment or an embedding-provider/model change. The
+  free Render plan can lose uploaded files on restart; use persistent storage
+  if they must survive.
 
 ## Ask flow stabilization
 
@@ -80,3 +86,26 @@
   welcome screen when no documents remain.
 - Targeted Gemini tests: 16 passed. Full backend tests: 71 passed. Frontend
   tests: 11 passed.
+
+## Deployment-readiness verification
+
+- `render.yaml`, `DEPLOY.md`, `Backend/.env.example`, and `README.md` use the
+  same defaults: `GEMINI_MODEL=gemini-3.5-flash`,
+  `EMBEDDING_PROVIDER=gemini`, `EMBEDDING_MODEL=gemini-embedding-001`,
+  `VECTOR_SIZE=768`, and `PINECONE_INDEX_NAME=omnibrain-documents-gemini`.
+- `Backend/requirements.txt` contains neither `torch` nor
+  `sentence-transformers`.
+- Production-style backend on port `10000`: `/health` HTTP 200; `/ready` HTTP
+  200 with Gemini, Pinecone, and embedding all `ready`.
+- Production frontend build and preview responded HTTP 200 and connected to
+  the local backend. Browser upload displayed the preparation status; the
+  successful summary and follow-up question both returned HTTP 200 with
+  `page_number: 1` sources. Deleting the PDF made its status endpoint return
+  404; after refresh, the conversation messages and citations remained visible
+  in browser history.
+- During browser testing, one initial answer request returned HTTP 500 with
+  `An unexpected error occurred while answering the question.` A subsequent
+  UI retry and a direct API retry both succeeded. Running two backend
+  processes against the same OneDrive-backed data directory also produced
+  `PermissionError [WinError 5]` during metadata replacement; the extra test
+  process was stopped, and the single-backend flow completed.
