@@ -327,11 +327,9 @@ function ChatWorkspace({
   return (
     <main className="chat-workspace">
       <div className="conversation" ref={conversationRef} aria-live="polite">
-        {!hasDocuments ? (
-          <Welcome documents={[]} />
-        ) : messages.length === 0 ? (
+        {messages.length === 0 ? (
           <Welcome
-            documents={documents}
+            documents={hasDocuments ? documents : []}
             isProcessingDocuments={isProcessingDocuments}
           />
         ) : (

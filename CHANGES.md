@@ -75,4 +75,8 @@
   the chat welcome state shows when uploaded PDFs are still being prepared.
 - The diagnostic API flow returned HTTP 200 with a grounded answer and
   `page_number: 1`; deletion returned HTTP 200.
-- Targeted Gemini tests: 16 passed. Frontend tests: 10 passed.
+- Messages remain visible in browser history after deleting their PDF and
+  refreshing; the chat no longer replaces an answered conversation with its
+  welcome screen when no documents remain.
+- Targeted Gemini tests: 16 passed. Full backend tests: 71 passed. Frontend
+  tests: 11 passed.

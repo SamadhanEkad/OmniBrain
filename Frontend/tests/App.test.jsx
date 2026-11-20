@@ -380,6 +380,67 @@ The equation is $E=mc^2$.
     );
   });
 
+  it("keeps answered conversation history visible after deleting its PDF and refreshing", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input, options) => {
+      const url = new URL(input);
+      if (url.pathname === "/health") return jsonResponse({ status: "healthy" });
+      if (url.pathname === "/api/documents/upload") {
+        return jsonResponse(uploadResult("doc-history", "notes.pdf"));
+      }
+      if (url.pathname === "/api/documents/answer") {
+        return jsonResponse({
+          answer: "This answer remains in local history.",
+          sources: [
+            {
+              document_id: "doc-history",
+              filename: "notes.pdf",
+              page_number: 1,
+              text: "The preserved answer source.",
+            },
+          ],
+        });
+      }
+      if (
+        url.pathname === "/api/documents/doc-history" &&
+        options.method === "DELETE"
+      ) {
+        return jsonResponse({ document_id: "doc-history", deleted: true });
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const app = render(<App />);
+    await uploadPdf(user, "notes.pdf");
+    await ask(user, "What should remain in history?");
+    expect(await screen.findByText("This answer remains in local history.")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Documents" }));
+    await user.click(screen.getByRole("button", { name: "Delete notes.pdf" }));
+    await user.click(screen.getByRole("button", { name: "Delete PDF" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/api/documents/doc-history"),
+        expect.objectContaining({ method: "DELETE" }),
+      );
+    });
+
+    app.unmount();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "History" }));
+    await user.click(
+      screen.getAllByRole("button", {
+        name: /What should remain in history/,
+      })[0],
+    );
+
+    expect(
+      await screen.findByText("This answer remains in local history."),
+    ).toBeTruthy();
+    expect(screen.getByText("notes.pdf — Page 1")).toBeTruthy();
+  });
+
   it("marks a document missing after the backend says it is unavailable", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn(async (input) => {
