@@ -1,382 +1,243 @@
-# OmniBrain
+<div align="center">
 
-OmniBrain is a web app for asking questions about information in PDF documents. Upload PDFs, ask a question in the chat, and receive an answer grounded in the document text, with source passages and page references where available.
+# 🧠 OmniBrain
 
-The app accepts up to **5 PDFs in one upload**. This limit applies to each upload request, not to the total number of PDFs in a conversation.
+### Ask questions about your PDFs and get answers backed by cited sources.
 
-## Key features
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Open%20App-2563eb?style=for-the-badge)](https://omnibrain-frontend-be3o.onrender.com)
+[![API Docs](https://img.shields.io/badge/API%20Docs-Swagger-10b981?style=for-the-badge)](https://omnibrain-backend-1tdn.onrender.com/docs)
 
-- Upload and manage PDF documents, with a 20 MB limit per file.
-- Extract and index PDF text in the background after upload, with per-stage status.
-- Search document content using vector similarity.
-- Ask questions about one PDF or select several PDFs. For several PDFs, the frontend requests an answer from each separately and combines the results.
-- View answers with supporting source text and page references.
-- Keep chat conversations and theme preferences in the browser's local storage.
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
+![Vite](https://img.shields.io/badge/Vite-6-646CFF?logo=vite&logoColor=white)
+![Pinecone](https://img.shields.io/badge/Pinecone-Vector%20DB-000000)
+![Gemini](https://img.shields.io/badge/Google-Gemini-4285F4?logo=google&logoColor=white)
 
-## Architecture
+</div>
 
-Uploading a PDF saves and validates it on the backend, then starts extraction, chunking, embedding, and Pinecone indexing as a background task. The frontend polls the document status endpoint and enables questions when indexing is ready. For each question, the backend embeds the query, retrieves relevant chunks, and sends that context to Gemini to generate an answer.
+---
 
-1. The React frontend sends PDF files to the FastAPI backend.
-2. The backend validates and saves each PDF on the local filesystem.
-3. After upload, a FastAPI background task extracts embedded text and page numbers with PyMuPDF.
-4. The backend cleans the text and splits it into overlapping chunks.
-5. The configured embedding provider creates chunk embeddings, which are stored in Pinecone.
-6. The frontend polls processing status while this work runs.
-7. For a question, the same provider creates a query embedding and Pinecone returns matching chunks.
-8. Google Gemini generates an answer from the retrieved text.
-9. The backend returns the answer and source details to the frontend.
+## 🌐 Live Links
+
+| | Link |
+|---|---|
+| **Web application** | https://omnibrain-frontend-be3o.onrender.com |
+| **API documentation (Swagger)** | https://omnibrain-backend-1tdn.onrender.com/docs |
+| **API health check** | https://omnibrain-backend-1tdn.onrender.com/health |
+| **Source code** | https://github.com/SamadhanEkad/OmniBrain |
+
+> **Note:** The app runs on a free hosting plan. After a period of inactivity the server goes to sleep, so the first request can take up to a minute. Wait for the **Online** badge in the top-right corner before uploading.
+
+---
+
+## 📖 About
+
+**OmniBrain** is a document intelligence app. Upload one or more PDFs, ask questions in plain language, and receive answers that are generated **only from the content of your documents**. Every answer includes the source passages and page numbers it was based on, so you can verify it.
+
+It is built on a **Retrieval-Augmented Generation (RAG)** pipeline: documents are split into passages, converted into vector embeddings, and stored in a vector database. When you ask a question, the most relevant passages are retrieved and passed to a large language model to write a grounded answer.
+
+## ✨ Features
+
+- **Chat with your PDFs:** ask natural-language questions and get clear, formatted answers.
+- **Cited sources:** every answer lists the document and page it came from.
+- **Multi-document questions:** select several PDFs and ask one question across all of them.
+- **Fast semantic search:** retrieval uses vector similarity, not keyword matching.
+- **Document management:** upload up to 5 PDFs at a time (20 MB each) and delete them whenever you want.
+- **Persistent chat history:** conversations and theme preference are saved in your browser.
+- **Light and dark mode.**
+- **Built-in health and readiness checks** for reliable operation.
+
+## ⚙️ How It Works
 
 ```mermaid
-flowchart TD
-    U[User] --> FE[React and Vite frontend]
-    FE -->|PDF upload| API[FastAPI backend]
-    API -->|Validate and save| PDF[Local PDF storage]
-    FE -->|Question for a selected PDF| API
-    API -->|Background processing| EX[PyMuPDF text extraction]
-    PDF --> EX
-    EX --> CH[Text cleaning and chunking]
-    CH --> EMB[Configured embedding provider and model]
-    EMB -->|Document vectors| DB[(Pinecone)]
-    API -->|Question text| QE[Same configured provider and model]
-    QE -->|Similarity search| DB
-    DB -->|Relevant text chunks| GEN[Google Gemini]
-    GEN -->|Answer and sources| API
-    API --> FE
-    FE -->|Poll processing status| API
+flowchart LR
+    A[Upload PDF] --> B[Extract text and pages<br/>PyMuPDF]
+    B --> C[Clean and chunk text]
+    C --> D[Create embeddings<br/>Gemini]
+    D --> E[(Pinecone<br/>vector index)]
+    F[Ask a question] --> G[Embed the question]
+    G --> E
+    E --> H[Retrieve relevant passages]
+    H --> I[Generate answer<br/>Gemini]
+    I --> J[Answer with sources and page numbers]
 ```
 
-Normal question answering does not make a separate metadata-generation request. Document overviews use retrieved page-level passages and return their citations with the answer.
+1. **Upload:** the backend validates the PDF and extracts its text page by page.
+2. **Index:** the text is cleaned, split into overlapping chunks, embedded with `gemini-embedding-001` (768 dimensions) and stored in Pinecone.
+3. **Ask:** your question is embedded with the same model, and Pinecone returns the most similar passages.
+4. **Answer:** Gemini writes a response using only the retrieved passages and returns it with citations.
 
-## Technology stack
+## 🧰 Tech Stack
 
-| Area | Technologies in the current implementation |
+| Layer | Technology |
 |---|---|
-| Frontend | React 18, JavaScript, Vite 6, CSS |
-| Frontend libraries | Lucide React, React Markdown, KaTeX, Remark GFM, Remark Math, Rehype KaTeX |
-| Backend | Python, FastAPI, Uvicorn, Pydantic |
-| AI and LLM | Google Gemini through `google-genai` for answers and cloud embeddings |
-| Embedding model | `gemini-embedding-001` with 768 output dimensions |
-| Document processing | PyMuPDF for PDF text extraction; LangChain text splitters and `tiktoken` for chunking and token counting |
-| Vector database | Pinecone, using a cosine-distance index |
-| Configuration | `python-dotenv` and environment variables |
+| Frontend | React 18, Vite 6, CSS, React Markdown, KaTeX, Lucide icons |
+| Backend | Python 3.12, FastAPI, Uvicorn, Pydantic |
+| LLM and embeddings | Google Gemini (`google-genai`): answer generation and `gemini-embedding-001` |
+| Vector database | Pinecone (cosine similarity, 768 dimensions) |
+| Document processing | PyMuPDF, LangChain text splitters, tiktoken |
+| Hosting | Render (Web Service for the API, Static Site for the frontend) |
+| Testing | pytest (backend), Vitest (frontend) |
 
-Set `GEMINI_MODEL` to a model currently available to the configured API key. `/ready` checks the configured model through the Gemini API; consult Google's [model catalog](https://ai.google.dev/gemini-api/docs/models) when choosing it.
-
-## Local development URLs
-
-| Component | URL | Purpose |
-|---|---|---|
-| Frontend | `http://localhost:5173` | OmniBrain user interface (Vite's default port) |
-| Backend | `http://127.0.0.1:8000` | FastAPI backend |
-| API documentation | `http://127.0.0.1:8000/docs` | Interactive Swagger UI |
-| Alternative API documentation | `http://127.0.0.1:8000/redoc` | ReDoc API reference |
-| Health check | `http://127.0.0.1:8000/health` | Checks whether the API process is responding |
-
-These are local development addresses, not public deployment URLs. If port 5173 is occupied, Vite may start on a different port and print that address in the terminal.
-
-## Important services and links
-
-| Service | URL | Purpose |
-|---|---|---|
-| OmniBrain repository | [github.com/SamadhanEkad/OmniBrain](https://github.com/SamadhanEkad/OmniBrain) | Source repository, verified from the Git remote |
-| Gemini embeddings | [Google AI embeddings](https://ai.google.dev/gemini-api/docs/embeddings) | Default 768-dimensional cloud embedding model |
-| Ollama | [ollama.com](https://ollama.com/) | Optional legacy local embedding provider |
-| Pinecone | [pinecone.io](https://www.pinecone.io/) | Hosted vector database used to store and search document embeddings |
-| Pinecone documentation | [docs.pinecone.io](https://docs.pinecone.io/) | Pinecone index and API reference |
-| Google Gemini API | [ai.google.dev/gemini-api/docs](https://ai.google.dev/gemini-api/docs) | Cloud API used to generate answers |
-
-Pinecone is a cloud service; the configured Gemini index defaults to `omnibrain-documents-gemini` in AWS `us-east-1`.
-
-## Project structure
+## 📁 Project Structure
 
 ```text
 OmniBrain/
-├── .python-version            # Python runtime selected for Render
 ├── Backend/
 │   ├── app/
-│   │   ├── api/                 # PDF upload, deletion, and question routes
-│   │   ├── services/            # PDF processing, embeddings, retrieval, and answers
-│   │   ├── config.py            # Backend settings and data paths
-│   │   └── main.py              # FastAPI application
-│   ├── Data/
-│   │   ├── raw/                 # Uploaded PDFs and document information
-│   │   └── processed/           # Extracted text, chunks, and embeddings
-│   ├── tests/                   # Backend tests
-│   ├── requirements.txt         # Runtime Python dependencies
-│   └── requirements-dev.txt     # Backend test dependencies
+│   │   ├── api/            # Upload, delete and question routes
+│   │   ├── services/       # PDF processing, embeddings, retrieval, answers
+│   │   ├── config.py       # Settings and environment variables
+│   │   └── main.py         # FastAPI app, CORS, health and readiness checks
+│   ├── tests/              # Backend tests
+│   ├── requirements.txt
+│   └── .env.example
 ├── Frontend/
-│   ├── src/
-│   │   ├── components/          # Chat, upload, document, and history UI
-│   │   ├── services/            # Backend API client and request helpers
-│   │   ├── App.jsx              # Main application
-│   │   └── index.css            # Application styles
-│   ├── package.json             # Frontend dependencies and scripts
-│   ├── package-lock.json        # Locked frontend dependency versions
-│   └── vite.config.js           # Vite configuration
-└── .gitignore
+│   ├── src/                # React application
+│   ├── tests/              # Frontend tests
+│   └── package.json
+├── scripts/                # Deployment check tool
+├── render.yaml             # Render blueprint
+├── DEPLOY.md               # Deployment guide
+└── README.md
 ```
 
-## Prerequisites
+## 🚀 Run Locally
 
-- Python 3.12 (the repository's tested and Render-selected runtime; the source uses Python 3.10+ syntax).
-- Node.js 18.x, 20.x, or 22+ and npm (the frontend uses Vite 6).
-- Optional: local embeddings require `Backend/requirements-local-embeddings.txt` and `sentence-transformers`.
-- A Pinecone account and API key.
-- A Google Gemini API key for answer generation.
+### Prerequisites
 
-The local `llama3.2:1b` model is used only by the optional metadata-generation helper; normal question answering does not call it.
+- Python 3.12 and Node.js 18+
+- A [Pinecone](https://www.pinecone.io/) API key
+- A [Google Gemini](https://aistudio.google.com/) API key
 
-## Installation and setup
+### 1. Clone
 
-### 1. Clone the repository
-
-```powershell
+```bash
 git clone https://github.com/SamadhanEkad/OmniBrain.git
 cd OmniBrain
 ```
 
-### 2. Set up the backend
+### 2. Start the backend
 
 ```powershell
 cd Backend
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements-dev.txt
-```
-
-If PowerShell prevents virtual-environment activation, use the environment's Python executable directly: `.\.venv\Scripts\python.exe`.
-
-`requirements-dev.txt` includes the optional Ollama client for local development and tests. `requirements.txt` installs the small Gemini-cloud runtime and does not install Sentence Transformers. For local embeddings, install `requirements-local-embeddings.txt` separately.
-
-```powershell
-python -m pip install -r requirements-dev.txt
-python -m pytest
-```
-
-### 3. Configure AI and database services
-
-The default embedding provider is Gemini. For optional local Ollama embeddings, set the provider and download its model:
-
-```powershell
-$env:EMBEDDING_PROVIDER = "ollama"
-$env:EMBEDDING_MODEL = "nomic-embed-text-v2-moe"
-ollama pull nomic-embed-text-v2-moe
-```
-
-The optional local Sentence Transformers configuration is:
-
-```powershell
-$env:EMBEDDING_PROVIDER = "local"
-$env:EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
-$env:VECTOR_SIZE = "768"
-```
-
-Set the Pinecone and Gemini credentials in the same PowerShell session that will run the backend. Replace the placeholders locally; do not commit real credentials:
-
-```powershell
-$env:PINECONE_API_KEY = "<your-pinecone-api-key>"
-$env:GEMINI_API_KEY = "<your-gemini-api-key>"
-$env:GEMINI_MODEL = "gemini-3.5-flash"
-```
-
-The code creates the Pinecone index if it does not exist. Its defaults are index `omnibrain-documents`, AWS cloud, region `us-east-1`, and 768 vector dimensions. The current implementation uses Pinecone's default namespace; no configurable namespace is active. The embedding model, vector size, and Pinecone index dimensions must agree.
-
-The backend loads configuration from environment variables and, when present, `Backend/.env` (via `python-dotenv`); it does not search the current working directory for another `.env` file. For a new local checkout, copy `Backend/.env.example` to `Backend/.env` if it does not already exist, then replace the placeholder credentials locally. Do not overwrite an existing `.env` or commit real credentials.
-
-### 4. Start the backend
-
-From the `Backend` directory, with the virtual environment active and required environment variables set:
-
-```powershell
+.\.venv\Scripts\Activate.ps1          # macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+Copy-Item .env.example .env           # macOS/Linux: cp .env.example .env
+# Edit .env and add your PINECONE_API_KEY and GEMINI_API_KEY
 python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-### 5. Start the frontend
+Check that it works: http://127.0.0.1:8000/health and http://127.0.0.1:8000/ready
 
-Open another terminal:
+### 3. Start the frontend
 
-```powershell
-cd OmniBrain\Frontend
+```bash
+cd Frontend
 npm ci
 npm run dev
 ```
 
-The frontend uses `VITE_API_URL` to select the backend address. `VITE_API_BASE_URL` remains supported as a legacy alias.
+Open http://localhost:5173.
 
-The tracked `Frontend/.env.development` and `Frontend/.env.production` files provide the local and deployed API URLs. Vite loads the matching file for each mode; Render's `VITE_API_URL` setting takes precedence at build time. The production file contains only the public backend URL, never credentials.
+## 🔐 Configuration
 
-### 6. Open OmniBrain
+Backend variables (`Backend/.env` locally, Render dashboard in production):
 
-Open the frontend URL printed by Vite (normally `http://localhost:5173`). Attach one or more PDFs, upload them, and ask a question. The first question about a PDF may take longer because the backend extracts, chunks, embeds, and indexes it before answering.
+| Variable | Description | Default |
+|---|---|---|
+| `PINECONE_API_KEY` | Pinecone API key | **required** |
+| `GEMINI_API_KEY` | Google Gemini API key | **required** |
+| `GEMINI_MODEL` | Model used to generate answers | `gemini-3.5-flash` |
+| `EMBEDDING_PROVIDER` | Embedding provider | `gemini` |
+| `EMBEDDING_MODEL` | Embedding model | `gemini-embedding-001` |
+| `VECTOR_SIZE` | Embedding dimensions (must match the index) | `768` |
+| `PINECONE_INDEX_NAME` | Pinecone index name | `omnibrain-documents-gemini` |
+| `PINECONE_CLOUD` / `PINECONE_REGION` | Used when the index is created | `aws` / `us-east-1` |
+| `CORS_ORIGINS` | Allowed frontend origin(s), comma-separated | localhost in development |
+| `ENVIRONMENT` | Set to `production` when deployed | `development` |
+| `MAX_FILES_PER_UPLOAD` | PDFs per upload | `5` |
+| `MAX_UPLOAD_SIZE_BYTES` | Max size per PDF | `20971520` (20 MB) |
 
-## Main features
+Frontend variable:
 
-- **PDF uploads:** Upload up to five PDFs in one request. Each file must be a readable, unencrypted PDF no larger than 20 MB.
-- **Text extraction and indexing:** PyMuPDF extracts page text; the backend cleans and chunks it, then creates embeddings and stores them in Pinecone when first needed.
-- **Document question answering:** Ask about a selected PDF. The backend retrieves matching passages and uses Gemini to generate the response.
-- **Multiple selected PDFs:** The interface sends a separate question request for each selected PDF and combines successful answers under their file names. It is not a single joint retrieval request.
-- **Sources and page references:** Responses include retrieved text and available document, chunk, page, and similarity-score information.
-- **Chat history:** Conversations and theme preference are stored in browser local storage.
-- **Document removal:** The API removes the uploaded PDF, its local processing files, and its Pinecone vectors.
+| Variable | Description |
+|---|---|
+| `VITE_API_URL` | Base URL of the backend API (baked in at build time) |
 
-## API endpoints
+> Never commit real API keys. `.env` files are excluded by `.gitignore`.
+
+## 🔌 API Overview
+
+Interactive documentation is available at `/docs`.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `GET` | `/` | Returns basic API status and version information |
-| `GET` | `/health` | Liveness check; confirms that the API process is responding |
-| `GET` | `/ready` | Readiness check for Gemini authentication/model access, Pinecone index compatibility, and live embedding generation |
-| `POST` | `/api/documents/upload` | Accepts multipart form data with one or more files under the repeated `files` field; returns `uploaded` and `failed` lists |
-| `GET` | `/api/documents/{document_id}/status` | Returns queued/running/ready/failed processing status and per-stage progress |
-| `DELETE` | `/api/documents/{document_id}` | Removes the local document files and its Pinecone vectors |
-| `POST` | `/api/documents/answer` | Accepts JSON `{"question": "...", "document_ids": ["..."]}` for selected PDFs; runs combined retrieval and one answer-generation call |
-| `POST` | `/api/documents/{document_id}/answer` | Backward-compatible single-document endpoint accepting JSON `{"question": "..."}` |
+| `GET` | `/health` | Confirms the API is running |
+| `GET` | `/ready` | Checks Gemini access, the Pinecone index and embedding generation |
+| `POST` | `/api/documents/upload` | Upload one or more PDFs |
+| `GET` | `/api/documents/{id}/status` | Processing status of a document |
+| `POST` | `/api/documents/answer` | Ask a question over selected documents |
+| `DELETE` | `/api/documents/{id}` | Delete a document and its vectors |
 
-The question must contain 1–2000 characters. Each source may include `document_id`, `chunk_id`, `page_number`, `score`, and `text`. The interactive API reference is available at `/docs` while the backend is running.
+## ☁️ Deployment (Render)
 
-## Configuration and environment variables
+| Service | Type | Root | Build | Start / Publish |
+|---|---|---|---|---|
+| `omnibrain-backend` | Web Service (Python) | `Backend` | `pip install -r requirements.txt` | `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
+| `omnibrain-frontend` | Static Site | `Frontend` | `npm ci && npm run build` | publish `dist` |
 
-| Variable | Purpose | Default / requirement |
-|---|---|---|
-| `PINECONE_API_KEY` | Authenticates with Pinecone | Required for indexing and retrieval |
-| `PINECONE_INDEX_NAME` | Pinecone index name | `omnibrain-documents-gemini`; index must use 768 dimensions and cosine metric |
-| `PINECONE_CLOUD` | Cloud used when creating the index | `aws` |
-| `PINECONE_REGION` | Region used when creating the index | `us-east-1` |
-| `GEMINI_API_KEY` | Authenticates Gemini answer generation | Required in production |
-| `GEMINI_MODEL` | Gemini answer-generation model | Defaults to `gemini-3.5-flash`; readiness verifies it is available to the configured API key |
-| `GEMINI_FALLBACK_MODEL` | Optional answer-generation fallback | Tried once after three 503 responses from `GEMINI_MODEL`; must be available to the same API key |
-| `EMBEDDING_PROVIDER` | Provider used for both document and query embeddings | `gemini` by default; optional `local` or `ollama` |
-| `EMBEDDING_MODEL` | Model used for both document and query embeddings | `gemini-embedding-001` by default; provider-compatible model if using local or Ollama |
-| `OLLAMA_URL` | Local Ollama API address | `http://localhost:11434`; never required on Render |
-| `OLLAMA_LLM_MODEL` | Local Ollama model used as a metadata fallback | `llama3.2:1b` |
-| `VECTOR_SIZE` | Expected Pinecone and embedding vector dimension | `768` |
-| `MAX_FILES_PER_UPLOAD` | Maximum PDFs in one upload request | `5` |
-| `MAX_UPLOAD_SIZE_BYTES` | Maximum size of each PDF | `20971520` bytes (20 MiB) |
-| `CORS_ORIGINS` | Comma-separated allowed frontend origins | Localhost origins by default; set the exact deployed frontend origin on Render |
-| `LOG_LEVEL` | Backend log level | `INFO` |
-| `PORT` | HTTP port for the backend | Supplied by Render; do not hardcode it |
-| `VITE_API_URL` | Backend base URL used by the frontend | Local development defaults to `http://127.0.0.1:8000`; required for production builds |
+Three rules for a working deployment:
 
-Backend variables are read from the process environment and `Backend/.env` when present; the backend does not search the current working directory for another `.env` file. The frontend reads `VITE_API_URL` from its mode-specific Vite environment, with `VITE_API_BASE_URL` retained as a legacy alias; the tracked development and production files contain only public API URLs. Production frontend code rejects a missing or loopback API URL. Never put credentials in source control or any `VITE_*` variable.
+1. **`VITE_API_URL` is applied at build time.** After changing it, redeploy the frontend.
+2. **`CORS_ORIGINS` must exactly match the frontend URL** (`https`, no trailing slash).
+3. **Set `ENVIRONMENT=production`** on the backend.
 
-## Render deployment
+To verify a deployment:
 
-Deploy the backend as a **Web Service** and the frontend as a separate **Static Site**. The project has no client-side router, so a static-site rewrite is not needed for the current single-page UI.
-The repository includes `render.yaml` for both services and `DEPLOY.md` for
-dashboard setup and environment-variable details.
-
-### Backend Web Service
-
-| Render setting | Value |
-|---|---|
-| Root Directory | `Backend` |
-| Build Command | `pip install -r requirements.txt` |
-| Start Command | `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
-| Health Check Path | `/health` |
-| Python | `.python-version` selects the latest available Python 3.12 patch |
-
-Set these variables in the Render dashboard; do not put credentials in `render.yaml` or source code:
-
-Set the embedding variables below in Render. The model is downloaded from the
-public Hugging Face repository when the backend first loads it; no Hugging Face
-API key is required.
-
-| Variable | Requirement |
-|---|---|
-| `PINECONE_API_KEY` | Required; Pinecone index/vector storage |
-| `GEMINI_API_KEY` | Required for generated answers |
-| `OLLAMA_URL` | Not required in production; only used for local development |
-| `CORS_ORIGINS` | `https://omnibrain-frontend-be3o.onrender.com` (exact frontend origin; no trailing slash) |
-| `GEMINI_MODEL` | `gemini-3.5-flash` by default; readiness verifies access |
-| `PINECONE_INDEX_NAME` | Optional; defaults to `omnibrain-documents-gemini` |
-| `PINECONE_CLOUD`, `PINECONE_REGION` | Optional; used if the index needs to be created |
-| `EMBEDDING_PROVIDER` | `gemini`; cloud embeddings |
-| `EMBEDDING_MODEL` | `gemini-embedding-001` |
-| `VECTOR_SIZE` | `768`; must match the Pinecone index |
-| `OLLAMA_LLM_MODEL` | Optional metadata fallback only; defaults to `llama3.2:1b` |
-
-Document and query embeddings use the same Gemini model, trimmed text, task types, batch size, and normalized 768-dimensional output. Local Sentence Transformers and Ollama remain optional selectable providers, but neither is installed by the default deployment requirements.
-
-Embedding model spaces are not interchangeable. Retrieval filters by provider, model, and vector dimension. The separate `omnibrain-documents-gemini` index avoids mixing Gemini vectors with old BGE vectors. Re-upload or re-index existing PDFs after switching providers; old vectors alone are not suitable for the new model.
-
-`/ready` actively probes Gemini, Pinecone, and embedding generation. `/health` remains a lightweight liveness check and does not verify external providers.
-
-The backend writes uploaded PDFs, document information, extracted text, chunks, and locally cached embeddings under `Backend/Data`. Render's free-plan filesystem is ephemeral. To preserve uploaded documents across restarts and deploys, use a paid Web Service with a persistent disk mounted at:
-
-```text
-/opt/render/project/src/Backend/Data
+```bash
+python scripts/check_deployment.py --backend https://omnibrain-backend-1tdn.onrender.com --frontend https://omnibrain-frontend-be3o.onrender.com
 ```
 
-Only files under the mount are durable. Without it, PDFs and local processing data are lost on restart even though vectors already written to Pinecone may remain. Those local files are currently required to answer questions and manage documents. Keep the disk private and size it for the uploaded PDFs and generated JSON.
+See [DEPLOY.md](DEPLOY.md) for the full guide.
 
-### Frontend Static Site
+## 🧪 Testing
 
-| Render setting | Value |
-|---|---|
-| Root Directory | `Frontend` |
-| Build Command | `npm ci && npm run build` |
-| Publish Directory | `dist` |
-| Environment Variable | `VITE_API_URL=https://omnibrain-backend-1tdn.onrender.com` |
+```bash
+# Backend
+cd Backend && python -m pytest -q
 
-The deployed frontend is `https://omnibrain-frontend-be3o.onrender.com` (letter `o` before `.onrender.com`); the similar `...be30...` hostname (zero) returns 404. The frontend build must receive `VITE_API_URL=https://omnibrain-backend-1tdn.onrender.com`. Set the backend's `CORS_ORIGINS` to the exact frontend origin. Local Vite origins remain allowed for development; production origins are read from the backend environment.
+# Frontend
+cd Frontend && npm test && npm run build
+```
 
-### Operational and privacy limitations
+## ⚠️ Limitations
 
-- The backend has no authentication or per-user data isolation. Anyone who obtains a document ID can use the public API to ask questions about or delete that document. Do not upload confidential PDFs to a public deployment without adding an appropriate access-control layer.
-- Gemini and Pinecone credentials and usage are required for their respective services; their quotas and costs depend on the accounts you configure. Keep the keys in Render's backend environment variables only.
-- Pinecone stores vectors and text metadata remotely; the PDF and processing JSON remain local to the backend disk. `/health` is a liveness check; `/ready` checks provider connectivity and model/index configuration.
-- PDF processing runs in an in-process FastAPI background task after upload. The saved per-stage status is visible to the frontend, but a process restart can interrupt an active task; the persistent disk preserves the PDF and status so a later question can retry indexing.
-- PDF support is embedded-text extraction only. OCR, image/chart understanding, and a SQL agent are not implemented.
+- **Text-based PDFs only.** Scanned documents without selectable text are not supported (no OCR yet).
+- **Temporary file storage on the free plan.** Uploaded files are lost when the server restarts or redeploys, and the app will ask you to upload them again. A persistent disk on a paid plan removes this limit.
+- **No user accounts.** There is no authentication or per-user isolation, so do not upload confidential documents to the public demo.
+- **AI answers can be imperfect.** Always check the cited passages against the original document.
+- **Free-tier API quotas** can occasionally cause temporary "busy" responses from the AI service.
 
-## Limitations
+## 🗺️ Roadmap
 
-- PDF extraction reads embedded text only. Scanned PDFs without selectable text are rejected; OCR and visual chart/table analysis are not implemented.
-- Upload limits are five PDFs per request and 20 MiB per file. The limit is per request, not a total conversation cap.
-- A question waits until uploaded PDFs finish processing. Failed processing remains visible and can be retried by asking a question after fixing the provider configuration.
-- Retrieval and generated answers can be incomplete or incorrect; check cited source passages against the original PDF.
-- Questions across selected PDFs use one backend request, one combined retrieval, and one Gemini generation call.
-- Deleting a PDF removes its local files and its Pinecone vectors.
+- User authentication and per-user document isolation
+- OCR support for scanned PDFs
+- Chart and table understanding
+- Persistent document storage
+- Support for additional file types
 
-## Troubleshooting
+## 👤 Author
 
-- **Backend does not start:** Confirm Python 3.12 is selected, activate the virtual environment, and install `Backend/requirements.txt`.
-- **Frontend dependencies are missing:** Run `npm ci` from `Frontend/`, then start it with `npm run dev`.
-- **Frontend cannot reach the backend:** Start the backend on port 8000, check that `VITE_API_URL` points to it, and restart Vite after changing its environment. The backend allows local development origins by default.
-- **Question answering fails:** Check `/ready` first. The answer route indexes uploaded PDFs in Pinecone before it calls Ollama or Gemini, so an unset `PINECONE_API_KEY` can fail before Gemini is reached. Configure `GEMINI_API_KEY` and a model supported by that key in `GEMINI_MODEL`; authentication, invalid-model, quota, and timeout errors are reported separately.
-- **Embedding or indexing fails:** Check `/ready` and the backend logs for the embedding check. With the default Gemini provider, confirm `GEMINI_API_KEY`, `EMBEDDING_MODEL=gemini-embedding-001`, and a 768-dimensional cosine Pinecone index named `omnibrain-documents-gemini`. For optional local embeddings, install `Backend/requirements-local-embeddings.txt` and configure `EMBEDDING_PROVIDER=local`.
-- **Question request returns 503:** The backend logs the exception traceback in Render with configured Gemini and Pinecone API keys redacted; the traceback is not returned to the frontend. Check those logs alongside `/ready` rather than treating `/health` as a provider check.
-- **PDF upload or extraction fails:** Check that the file is a valid, unencrypted PDF under 20 MiB and contains selectable text. Scanned PDFs need OCR, which is not currently provided.
+**Samadhan Ekad**
+GitHub: [@SamadhanEkad](https://github.com/SamadhanEkad)
 
-## Future scope
+---
 
-Potential future improvements, not currently implemented, include OCR for scanned PDFs, visual analysis of charts and tables, joint retrieval across multiple PDFs, and authentication with per-user document isolation.
+<div align="center">
 
-## Author and license
+If you find this project useful, please consider giving it a ⭐
 
-The GitHub repository is owned by [SamadhanEkad](https://github.com/SamadhanEkad). No license file is present in the repository, so the project's license terms are not specified here.
-
-## Application URLs
-
-### Frontend
-
-- **URL:** [http://localhost:5173](http://localhost:5173/)
-- **Purpose:** Open the OmniBrain web application to upload PDF documents and ask questions.
-
-### Backend
-
-- **URL:** [http://127.0.0.1:8000](http://127.0.0.1:8000/)
-- **Purpose:** FastAPI backend that handles document uploads, document processing, information retrieval, and answer generation.
-
-### Backend API Documentation
-
-- **Swagger UI:** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- **ReDoc:** [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
-- **Purpose:** Explore and test the available backend API endpoints.
-
-### Important Notes
-
-1. These URLs are for local development.
-2. Start the backend and frontend servers before opening the application.
-3. The frontend uses Vite's default port `5173`, and the backend is configured for port `8000`. Check the server output if the configured ports differ.
-4. This repository does not specify deployed service URLs.
+</div>
