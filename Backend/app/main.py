@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import logging
 import os
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,30 +50,64 @@ APP_VERSION = "1.0.0"
 
 DEFAULT_CORS_ORIGINS = (
     "http://localhost:5173,"
-    "http://127.0.0.1:5173,"
-    "http://localhost:5174,"
-    "http://127.0.0.1:5174,"
-    "http://localhost:5175,"
-    "http://127.0.0.1:5175,"
-    "http://localhost:3000,"
-    "http://127.0.0.1:3000"
+    "http://127.0.0.1:5173"
 )
 
 
 def parse_cors_origins(origins: str) -> list[str]:
-    """Parse comma-separated origins and normalize optional trailing slashes."""
-    return list(
-        dict.fromkeys(
-            origin.strip().rstrip("/")
-            for origin in origins.split(",")
-            if origin.strip()
-        )
-    )
+    """Parse comma-separated URLs into normalized HTTP(S) origins."""
+    normalized = []
+    for value in origins.split(","):
+        value = value.strip()
+        if not value:
+            continue
+
+        parsed = urlsplit(value)
+        scheme = parsed.scheme.lower()
+        if (
+            scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ValueError(f"Invalid CORS origin: {value!r}")
+
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError(f"Invalid CORS origin: {value!r}") from exc
+
+        hostname = parsed.hostname.lower()
+        if ":" in hostname:
+            hostname = f"[{hostname}]"
+        default_port = 80 if scheme == "http" else 443
+        authority = hostname if port is None or port == default_port else f"{hostname}:{port}"
+        origin = f"{scheme}://{authority}"
+        if origin not in normalized:
+            normalized.append(origin)
+
+    return normalized
 
 
-CORS_ORIGINS = parse_cors_origins(
-    os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
-)
+def get_cors_origins(origins: str | None, environment: str) -> list[str]:
+    is_production = environment.strip().casefold() == "production"
+    configured = origins if origins is not None else ""
+    parsed_origins = parse_cors_origins(configured)
+    if not is_production:
+        for local_origin in ("http://localhost:5173", "http://127.0.0.1:5173"):
+            if local_origin not in parsed_origins:
+                parsed_origins.append(local_origin)
+    if is_production:
+        return [
+            origin
+            for origin in parsed_origins
+            if urlsplit(origin).hostname not in {"localhost", "127.0.0.1", "::1"}
+        ]
+    return parsed_origins
+
+
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().casefold()
+CORS_ORIGINS = get_cors_origins(os.getenv("CORS_ORIGINS"), ENVIRONMENT)
 
 # --------------------------------------------------
 # 2. Create FastAPI application
@@ -105,10 +140,9 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Accept", "Content-Type"],
 )
 
 

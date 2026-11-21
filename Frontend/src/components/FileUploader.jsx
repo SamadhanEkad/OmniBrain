@@ -318,8 +318,7 @@ export default function FileUploader({
 
       {uploading && (
         <p className="upload-note" role="status" aria-live="polite">
-          Uploading and processing your PDFs. Large documents may take
-          longer to process.
+          Uploading your PDFs. Document processing continues in the background.
         </p>
       )}
     </div>

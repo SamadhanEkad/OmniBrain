@@ -41,9 +41,25 @@ def test_cors_does_not_allow_an_unconfigured_production_origin():
 
 def test_cors_origins_are_normalized_and_deduplicated():
     assert main_module.parse_cors_origins(
-        " https://omnibrain-frontend-be3o.onrender.com/ ,"
+        " https://omnibrain-frontend-be3o.onrender.com/app/ ,"
         "https://omnibrain-frontend-be3o.onrender.com"
     ) == ["https://omnibrain-frontend-be3o.onrender.com"]
+
+
+def test_production_cors_excludes_loopback_even_when_configured():
+    assert main_module.get_cors_origins(
+        "https://frontend.example/path,http://localhost:5173",
+        "production",
+    ) == ["https://frontend.example"]
+
+
+def test_production_cors_has_no_development_defaults():
+    assert main_module.get_cors_origins(None, "production") == []
+
+
+def test_cors_rejects_non_http_origins():
+    with pytest.raises(ValueError, match="Invalid CORS origin"):
+        main_module.parse_cors_origins("javascript://example.com")
 
 
 def test_cors_allows_local_development_origin():
@@ -52,7 +68,7 @@ def test_cors_allows_local_development_origin():
         headers={
             "Origin": "http://localhost:5173",
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "content-type",
+            "Access-Control-Request-Headers": "accept,content-type",
         },
     )
 
@@ -61,6 +77,7 @@ def test_cors_allows_local_development_origin():
     assert "POST" in response.headers["access-control-allow-methods"]
     assert "DELETE" in response.headers["access-control-allow-methods"]
     assert "content-type" in response.headers["access-control-allow-headers"].lower()
+    assert "accept" in response.headers["access-control-allow-headers"].lower()
 
 
 def test_readiness_reports_missing_provider_configuration(monkeypatch):

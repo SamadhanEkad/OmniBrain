@@ -772,6 +772,7 @@ export default function App() {
   const workspaceRef = useRef(workspace);
   const [activeView, setActiveView] = useState("chat");
   const [backendStatus, setBackendStatus] = useState("checking");
+  const [isWakingBackend, setIsWakingBackend] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isAnswering, setIsAnswering] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
@@ -840,12 +841,12 @@ export default function App() {
     noticeTimer.current = window.setTimeout(() => setNotice(""), 3200);
   }, []);
 
-  const refreshHealth = useCallback(() => {
+  const refreshHealth = useCallback((timeoutMs = 10_000) => {
     if (healthRequest.current) return healthRequest.current;
 
     if (mounted.current) setBackendStatus("checking");
 
-    healthRequest.current = api.checkHealth()
+    healthRequest.current = api.checkHealth(timeoutMs)
       .then((result) => {
         const status = result?.status === "healthy" ? "online" : "degraded";
 
@@ -862,7 +863,9 @@ export default function App() {
           );
         }
 
-        return "offline";
+        return error instanceof ApiError && error.code === "API_CONFIG_ERROR"
+          ? "misconfigured"
+          : "offline";
       })
       .finally(() => {
         healthRequest.current = null;
@@ -873,6 +876,7 @@ export default function App() {
 
   useEffect(() => {
     mounted.current = true;
+    let active = true;
 
     const markOffline = () => setBackendStatus("offline");
     const markReachable = (event) => {
@@ -883,7 +887,31 @@ export default function App() {
     window.addEventListener("omnibrain:backend-reachable", markReachable);
     window.addEventListener("online", refreshHealth);
 
-    refreshHealth();
+    const checkWakingBackend = async () => {
+      const deadline = Date.now() + 90_000;
+      let status = await refreshHealth();
+
+      while (
+        active &&
+        status === "offline" &&
+        Date.now() < deadline
+      ) {
+        setIsWakingBackend(true);
+        const remaining = deadline - Date.now();
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, Math.min(5_000, remaining)),
+        );
+        if (active) {
+          status = await refreshHealth(
+            Math.max(1, Math.min(10_000, deadline - Date.now())),
+          );
+        }
+      }
+
+      if (active) setIsWakingBackend(false);
+    };
+
+    checkWakingBackend();
 
     const interval = window.setInterval(refreshHealth, 30_000);
     const refreshWhenVisible = () => {
@@ -892,6 +920,7 @@ export default function App() {
     document.addEventListener("visibilitychange", refreshWhenVisible);
 
     return () => {
+      active = false;
       mounted.current = false;
 
       window.removeEventListener("omnibrain:backend-unavailable", markOffline);
@@ -934,9 +963,7 @@ export default function App() {
           } catch (error) {
             if (
               error instanceof ApiError &&
-              error.status === 404 &&
-              message ===
-                "This document is no longer available on the server. Please upload it again."
+              error.status === 404
             ) {
               return {
                 conversationId,
@@ -1661,6 +1688,12 @@ export default function App() {
           onDelete={() => deleteConversation(activeConversation.id)}
           onRefreshHealth={refreshHealth}
         />
+
+        {isWakingBackend && (
+          <p className="backend-waking-notice" role="status" aria-live="polite">
+            Waking up the server… this can take up to a minute on the free plan
+          </p>
+        )}
 
         {activeView === "chat" ? (
           <ChatWorkspace

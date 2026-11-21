@@ -125,15 +125,30 @@ The equation is $E=mc^2$.
     );
   });
 
-  it("shows offline status without an intrusive error popup when the backend cannot be reached", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockRejectedValue(new TypeError("Failed to fetch")),
-    );
+  it("retries a sleeping backend twice and then shows online", async () => {
+    let healthAttempts = 0;
+    const fetchMock = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/health") {
+        healthAttempts += 1;
+        if (healthAttempts <= 2) {
+          throw new TypeError("Failed to fetch");
+        }
+        return jsonResponse({ status: "healthy" });
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
 
-    expect(await screen.findByRole("button", { name: "Offline" })).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "Waking up the server… this can take up to a minute on the free plan",
+      ),
+    ).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Online" })).toBeTruthy();
+    expect(healthAttempts).toBeGreaterThanOrEqual(3);
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -165,6 +180,29 @@ The equation is $E=mc^2$.
       window.removeEventListener("omnibrain:backend-unavailable", unavailable);
       window.removeEventListener("omnibrain:backend-reachable", reachable);
     }
+  });
+
+  it("shows a backend answer failure in the chat and re-enables the composer", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/health") return jsonResponse({ status: "healthy" });
+      if (url.pathname === "/api/documents/upload") {
+        return jsonResponse(uploadResult("doc-error", "notes.pdf"));
+      }
+      if (url.pathname === "/api/documents/answer") {
+        return jsonResponse({ detail: "The AI service is busy." }, 503);
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await uploadPdf(user);
+    await ask(user, "Summarize this document");
+
+    expect(await screen.findByText("The AI service is busy.")).toBeTruthy();
+    expect(screen.getByLabelText("Ask about your documents").disabled).toBe(false);
   });
 
   it("sends one combined question request for five uploaded PDFs", async () => {

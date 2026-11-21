@@ -1,15 +1,54 @@
-const configuredApiBaseUrl =
+const configuredApiBaseUrlRaw =
   import.meta.env.VITE_API_URL?.trim() ||
   import.meta.env.VITE_API_BASE_URL?.trim() ||
   "";
+const configuredApiBaseUrl = configuredApiBaseUrlRaw.replace(/\/+$/, "");
 const isProductionBuild = import.meta.env.MODE === "production";
 const isLoopbackUrl = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(
   configuredApiBaseUrl,
 );
-const apiConfigurationError =
-  isProductionBuild && (!configuredApiBaseUrl || isLoopbackUrl)
-    ? "Set VITE_API_URL to the deployed backend URL. Production builds cannot use a localhost API."
-    : null;
+function getApiConfigurationError() {
+  if (configuredApiBaseUrl && !/^https?:\/\//i.test(configuredApiBaseUrl)) {
+    return "VITE_API_URL must start with https://";
+  }
+  if (isProductionBuild && (!configuredApiBaseUrl || isLoopbackUrl)) {
+    return "Set VITE_API_URL to the deployed backend URL. Production builds cannot use a localhost API.";
+  }
+  if (!configuredApiBaseUrl) return null;
+
+  let url;
+  try {
+    url = new URL(configuredApiBaseUrl);
+  } catch {
+    return "VITE_API_URL must be an absolute HTTP or HTTPS backend URL.";
+  }
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    return "VITE_API_URL must be an HTTP or HTTPS backend URL without credentials, query, or fragment.";
+  }
+  if (
+    isProductionBuild &&
+    url.protocol !== "https:" &&
+    !isLoopbackUrl
+  ) {
+    return "VITE_API_URL must use HTTPS in production to avoid browser mixed-content blocking.";
+  }
+  if (
+    typeof window !== "undefined" &&
+    window.location.protocol === "https:" &&
+    url.protocol === "http:" &&
+    !isLoopbackUrl
+  ) {
+    return "This secure page cannot connect to an HTTP backend. Set VITE_API_URL to an HTTPS URL.";
+  }
+  return null;
+}
+const apiConfigurationError = getApiConfigurationError();
 const API_BASE_URL = (
   configuredApiBaseUrl ||
   (isProductionBuild ? "" : "http://127.0.0.1:8000")
@@ -130,6 +169,7 @@ async function request(
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
       ...options,
+      credentials: "omit",
       signal: controller.signal,
     });
 
@@ -228,8 +268,8 @@ export const api = {
   baseUrl: API_BASE_URL || "Not configured",
 
   // Check whether the FastAPI backend is responding.
-  checkHealth() {
-    return request("/health", {}, 10_000);
+  checkHealth(timeoutMs = 10_000) {
+    return request("/health", {}, timeoutMs);
   },
 
   getDocumentStatus(documentId) {
@@ -327,7 +367,7 @@ export const api = {
         timeout:
           "Upload confirmation is taking longer than expected. Check the document status before retrying.",
         network:
-          "The upload connection was interrupted. Check the document list before retrying.",
+          "Could not connect to the backend. The server may be waking up. Wait a minute and try again.",
       },
     );
   },
@@ -381,7 +421,7 @@ export const api = {
         timeout:
           "This answer is taking longer than expected. Please try again shortly.",
         network:
-          "The connection was interrupted. OmniBrain will recheck the backend automatically.",
+          "Could not connect to the backend. The server may be waking up. Wait a minute and try again.",
       },
     );
   },

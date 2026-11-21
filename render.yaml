@@ -9,6 +9,8 @@ services:
     plan: free
     # Persistent disks require a paid Render plan.
     envVars:
+      - key: ENVIRONMENT
+        value: production
       - key: PYTHON_VERSION
         value: "3.12"
       - key: EMBEDDING_PROVIDER

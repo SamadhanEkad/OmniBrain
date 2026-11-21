@@ -5,6 +5,7 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-check/
 venv/
 env/
 
@@ -14,6 +15,9 @@ env/
 !.env.example
 !Frontend/.env.development
 !Frontend/.env.production
+.pytest_cache/
+*.pdf
+.streamlit/secrets.toml
 
 # Private and generated PDF data
 Backend/Data/raw/

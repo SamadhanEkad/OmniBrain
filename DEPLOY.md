@@ -1,5 +1,30 @@
 # Deploy OmniBrain to Render
 
+## Connecting frontend and backend
+
+1. Deploy the backend service first.
+2. Copy the public backend URL from the Render Dashboard.
+3. Set `VITE_API_URL` on the static site to that exact backend URL.
+4. Deploy or redeploy the static site so Vite builds the URL into the bundle.
+5. Copy the frontend static-site URL from the Render Dashboard.
+6. Set `CORS_ORIGINS` on the backend to that exact frontend origin:
+   `https://your-frontend.onrender.com` with no trailing slash or path.
+7. Redeploy or restart the backend after changing `CORS_ORIGINS`.
+8. Run:
+   `python scripts/check_deployment.py --backend https://your-backend.onrender.com --frontend https://your-frontend.onrender.com`
+9. Open the frontend and wait up to 60 seconds for the status badge to show
+   `Online`.
+
+### Common failures
+
+| Failure | Fix |
+|---|---|
+| CORS error in the browser console | Set `CORS_ORIGINS` to the exact frontend HTTPS origin, with no trailing slash, and redeploy/restart the backend. |
+| "Failed to fetch" or stale API URL | Set `VITE_API_URL` on the static site and redeploy it; Vite values are baked in at build time. |
+| Mixed-content warning | Use an HTTPS backend URL. An HTTP backend cannot be called from an HTTPS frontend. |
+| Backend shows offline at first | Wait up to 60 seconds while the Render free-plan backend wakes. The deployment check waits up to 90 seconds. |
+| Wrong Gemini model or quota | Check `/ready`; set a model available to the API key and configure a valid `GEMINI_API_KEY`. |
+
 ## Render Dashboard
 
 1. Push the `render.yaml` Blueprint to the repository.
