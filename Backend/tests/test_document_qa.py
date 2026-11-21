@@ -1,12 +1,14 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app import main as main_module
+from app.api import upload as upload_api
 from app.services import answer_generator
 from app.services.answer_generator import (
     GeminiAuthenticationError,
@@ -39,9 +41,25 @@ def test_cors_does_not_allow_an_unconfigured_production_origin():
 
 def test_cors_origins_are_normalized_and_deduplicated():
     assert main_module.parse_cors_origins(
-        " https://omnibrain-frontend-be3o.onrender.com/ ,"
+        " https://omnibrain-frontend-be3o.onrender.com/app/ ,"
         "https://omnibrain-frontend-be3o.onrender.com"
     ) == ["https://omnibrain-frontend-be3o.onrender.com"]
+
+
+def test_production_cors_excludes_loopback_even_when_configured():
+    assert main_module.get_cors_origins(
+        "https://frontend.example/path,http://localhost:5173",
+        "production",
+    ) == ["https://frontend.example"]
+
+
+def test_production_cors_has_no_development_defaults():
+    assert main_module.get_cors_origins(None, "production") == []
+
+
+def test_cors_rejects_non_http_origins():
+    with pytest.raises(ValueError, match="Invalid CORS origin"):
+        main_module.parse_cors_origins("javascript://example.com")
 
 
 def test_cors_allows_local_development_origin():
@@ -50,7 +68,7 @@ def test_cors_allows_local_development_origin():
         headers={
             "Origin": "http://localhost:5173",
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "content-type",
+            "Access-Control-Request-Headers": "accept,content-type",
         },
     )
 
@@ -59,6 +77,7 @@ def test_cors_allows_local_development_origin():
     assert "POST" in response.headers["access-control-allow-methods"]
     assert "DELETE" in response.headers["access-control-allow-methods"]
     assert "content-type" in response.headers["access-control-allow-headers"].lower()
+    assert "accept" in response.headers["access-control-allow-headers"].lower()
 
 
 def test_readiness_reports_missing_provider_configuration(monkeypatch):
@@ -332,9 +351,12 @@ def test_gemini_provider_errors_are_classified_safely(
     from google.genai.errors import ClientError
 
     mock_client = Mock()
-    mock_client.models.generate_content.side_effect = ClientError(
+    error = ClientError(
         code=status_code,
         response_json={"message": "provider response must not reach clients"},
+    )
+    mock_client.models.generate_content.side_effect = (
+        [error, error, error] if status_code == 429 else error
     )
     monkeypatch.setattr(
         answer_generator,
@@ -346,12 +368,101 @@ def test_gemini_provider_errors_are_classified_safely(
         "DEFAULT_GEMINI_MODEL",
         "gemini-3.6-flash",
     )
+    monkeypatch.setattr(answer_generator, "GEMINI_FALLBACK_MODEL", "")
+    monkeypatch.setattr(answer_generator.time, "sleep", Mock())
 
     with pytest.raises(exception_type):
         answer_generator.generate_answer(
             "What does the document say?",
             [{"page_number": 1, "text": "The answer evidence."}],
         )
+    assert mock_client.models.generate_content.call_count == (
+        3 if status_code == 429 else 1
+    )
+
+
+def test_gemini_answer_retries_503_and_then_succeeds(monkeypatch):
+    from google.genai.errors import ClientError
+
+    mock_client = Mock()
+    mock_client.models.generate_content.side_effect = [
+        ClientError(code=503, response_json={"message": "temporary"}),
+        ClientError(code=503, response_json={"message": "temporary"}),
+        SimpleNamespace(text="Recovered answer."),
+    ]
+    monkeypatch.setattr(
+        answer_generator,
+        "get_gemini_client",
+        Mock(return_value=mock_client),
+    )
+    monkeypatch.setattr(answer_generator, "GEMINI_FALLBACK_MODEL", "")
+    sleep = Mock()
+    monkeypatch.setattr(answer_generator.time, "sleep", sleep)
+
+    assert answer_generator.generate_answer(
+        "What is the finding?",
+        [{"page_number": 1, "text": "The finding is supported by evidence."}],
+    ) == "Recovered answer."
+    assert mock_client.models.generate_content.call_count == 3
+    assert sleep.call_args_list == [((2,),), ((4,),)]
+
+
+def test_gemini_answer_503_exhaustion_is_friendly(monkeypatch):
+    from google.genai.errors import ClientError
+
+    mock_client = Mock()
+    mock_client.models.generate_content.side_effect = [
+        ClientError(code=503, response_json={"message": "temporary"})
+        for _ in range(3)
+    ]
+    monkeypatch.setattr(
+        answer_generator,
+        "get_gemini_client",
+        Mock(return_value=mock_client),
+    )
+    monkeypatch.setattr(answer_generator, "GEMINI_FALLBACK_MODEL", "")
+    monkeypatch.setattr(answer_generator.time, "sleep", Mock())
+
+    with pytest.raises(
+        GeminiUnavailableError,
+        match="The AI service is busy. Please try again in a minute.",
+    ):
+        answer_generator.generate_answer(
+            "What is the finding?",
+            [{"page_number": 1, "text": "The finding is supported by evidence."}],
+        )
+    assert mock_client.models.generate_content.call_count == 3
+
+
+def test_gemini_answer_503_uses_fallback_model_once(monkeypatch):
+    from google.genai.errors import ClientError
+
+    mock_client = Mock()
+    mock_client.models.generate_content.side_effect = [
+        ClientError(code=503, response_json={"message": "temporary"})
+        for _ in range(3)
+    ] + [SimpleNamespace(text="Fallback answer.")]
+    monkeypatch.setattr(
+        answer_generator,
+        "get_gemini_client",
+        Mock(return_value=mock_client),
+    )
+    monkeypatch.setattr(answer_generator, "DEFAULT_GEMINI_MODEL", "primary-model")
+    monkeypatch.setattr(
+        answer_generator,
+        "GEMINI_FALLBACK_MODEL",
+        "fallback-model",
+    )
+    monkeypatch.setattr(answer_generator.time, "sleep", Mock())
+
+    assert answer_generator.generate_answer(
+        "What is the finding?",
+        [{"page_number": 1, "text": "The finding is supported by evidence."}],
+    ) == "Fallback answer."
+    assert [
+        call.kwargs["model"]
+        for call in mock_client.models.generate_content.call_args_list
+    ] == ["primary-model", "primary-model", "primary-model", "fallback-model"]
 
 
 def test_gemini_timeout_is_reported_as_a_timeout(monkeypatch):
@@ -609,6 +720,78 @@ def test_delete_document_endpoint_also_removes_vectors(monkeypatch):
     remove.assert_called_once_with(document_id)
 
 
+def test_document_processing_status_reports_progress_and_failure(monkeypatch):
+    document_id = "123e4567-e89b-12d3-a456-426614174000"
+    monkeypatch.setattr(
+        upload_api,
+        "load_document_info",
+        Mock(
+            return_value={
+                "document_id": document_id,
+                "processing_status": {
+                    "extraction": {"status": "complete"},
+                    "chunking": {"status": "complete"},
+                    "embedding": {"status": "running"},
+                    "indexing": {"status": "pending"},
+                },
+            }
+        ),
+    )
+
+    response = TestClient(app).get(
+        f"/api/documents/{document_id}/status",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["processing_state"] == "processing"
+    assert response.json()["processing_status"]["embedding"]["status"] == "running"
+
+    monkeypatch.setattr(
+        upload_api,
+        "load_document_info",
+        Mock(
+            return_value={
+                "document_id": document_id,
+                "processing_status": {
+                    "extraction": {"status": "complete"},
+                    "chunking": {"status": "complete"},
+                    "embedding": {"status": "failed", "error": "RuntimeError"},
+                    "indexing": {"status": "pending"},
+                },
+            }
+        ),
+    )
+
+    response = TestClient(app).get(
+        f"/api/documents/{document_id}/status",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["processing_state"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_upload_enqueues_processing_for_each_accepted_pdf(monkeypatch):
+    document_id = "123e4567-e89b-12d3-a456-426614174000"
+    monkeypatch.setattr(
+        upload_api,
+        "save_pdfs",
+        AsyncMock(
+            return_value={
+                "uploaded": [{"document_id": document_id}],
+                "failed": [],
+            }
+        ),
+    )
+    tasks = BackgroundTasks()
+
+    result = await upload_api.upload_documents(tasks, [])
+
+    assert result["uploaded"][0]["document_id"] == document_id
+    assert len(tasks.tasks) == 1
+    assert tasks.tasks[0].args == (document_id,)
+
+
 def test_document_is_indexed_once_and_existing_index_is_reused(
     monkeypatch,
     tmp_path,
@@ -617,6 +800,7 @@ def test_document_is_indexed_once_and_existing_index_is_reused(
     (tmp_path / f"{document_id}.pdf").touch()
     monkeypatch.setattr(document_qa_service, "RAW_DATA_DIR", tmp_path)
     monkeypatch.setattr(file_service, "RAW_DATA_DIR", tmp_path)
+    monkeypatch.setattr(file_service, "PROCESSED_DATA_DIR", tmp_path)
 
     client = Mock()
     index_mock = Mock()
@@ -646,6 +830,20 @@ def test_document_is_indexed_once_and_existing_index_is_reused(
 
     document_qa_service.ensure_document_indexed(document_id)
 
+    processing_status = file_service.load_document_info(document_id)[
+        "processing_status"
+    ]
+    assert {
+        stage: value["status"]
+        for stage, value in processing_status.items()
+        if stage != "metadata"
+    } == {
+        "extraction": "complete",
+        "chunking": "complete",
+        "embedding": "complete",
+        "indexing": "complete",
+    }
+
     extract.assert_called_once()
     chunk.assert_called_once_with("extracted.json", filename=None)
     embed.assert_called_once_with(document_id)
@@ -655,7 +853,9 @@ def test_document_is_indexed_once_and_existing_index_is_reused(
 
     client.reset_mock()
     index_mock.reset_mock()
-    client.list_indexes.return_value = [SimpleNamespace(name="omnibrain-documents")]
+    client.list_indexes.return_value = [
+        SimpleNamespace(name=vector_store.INDEX_NAME)
+    ]
     client.describe_index.return_value = SimpleNamespace(
         dimension=768,
         metric="cosine",
@@ -892,7 +1092,18 @@ def test_metadata_generation_failure_is_saved_and_reported_gracefully(
     generate_metadata.assert_called_once()
 
 
-def test_chunker_keeps_chunks_from_every_page(tmp_path):
+def test_chunker_keeps_chunks_from_every_page(monkeypatch, tmp_path):
+    class FakeEncoding:
+        def encode(self, text):
+            return text.split()
+
+        def decode(self, ids):
+            return " ".join(ids)
+
+    monkeypatch.setattr(
+        "app.services.text_chunker._get_encoding",
+        lambda: FakeEncoding(),
+    )
     document_id = "123e4567-e89b-12d3-a456-426614174000"
     source = tmp_path / "extracted.json"
     source.write_text(

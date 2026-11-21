@@ -6,7 +6,7 @@ import httpx
 from google.genai import types
 from google.genai.errors import APIError, ClientError
 
-from app.config import GEMINI_MODEL
+from app.config import GEMINI_FALLBACK_MODEL, GEMINI_MODEL
 from app.services.gemini_client import get_gemini_client
 from app.services.retrieval_service import (
     DEFAULT_TOP_K,
@@ -279,6 +279,46 @@ Format your response in clean Markdown. Return only the final answer.
 # 5. Generate an answer with Google Gemini API
 # --------------------------------------------------
 
+def _generate_content_with_retries(
+    client,
+    model: str,
+    prompt: str,
+    config,
+):
+    """Retry transient Gemini failures, then try the optional fallback once."""
+    for attempt in range(3):
+        try:
+            return client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=config,
+            )
+        except APIError as exc:
+            status = getattr(exc, "code", None)
+            if status not in (429, 503):
+                raise
+            if attempt < 2:
+                time.sleep(2 ** (attempt + 1))
+                continue
+            if (
+                status == 503
+                and GEMINI_FALLBACK_MODEL
+                and GEMINI_FALLBACK_MODEL != model
+            ):
+                logger.warning(
+                    "Gemini model '%s' remained unavailable; trying configured "
+                    "fallback model '%s'.",
+                    model,
+                    GEMINI_FALLBACK_MODEL,
+                )
+                return client.models.generate_content(
+                    model=GEMINI_FALLBACK_MODEL,
+                    contents=prompt,
+                    config=config,
+                )
+            raise
+
+
 def generate_answer(
     question: str,
     retrieved_chunks: list[dict],
@@ -349,10 +389,11 @@ def generate_answer(
 
     t_gen_start = time.perf_counter()
     try:
-        response = client.models.generate_content(
-            model=target_model,
-            contents=prompt,
-            config=config,
+        response = _generate_content_with_retries(
+            client,
+            target_model,
+            prompt,
+            config,
         )
     except ClientError as exc:
         status = getattr(exc, "code", None)
@@ -373,14 +414,18 @@ def generate_answer(
             ) from exc
         if status == 429:
             raise GeminiQuotaError(
-                "Gemini rate limit or quota was reached. Try again later."
+                "The AI service is busy. Please try again in a minute."
             ) from exc
         if status in (408, 504):
             raise GeminiTimeoutError(
                 "Gemini did not respond before the request timeout."
             ) from exc
         raise GeminiUnavailableError(
-            f"Gemini rejected the answer request (HTTP {status or 'unknown'})."
+            (
+                "The AI service is busy. Please try again in a minute."
+                if status == 503
+                else f"Gemini rejected the answer request (HTTP {status or 'unknown'})."
+            )
         ) from exc
     except APIError as exc:
         status = getattr(exc, "code", None)
@@ -391,14 +436,18 @@ def generate_answer(
         )
         if status == 429:
             raise GeminiQuotaError(
-                "Gemini rate limit or quota was reached. Try again later."
+                "The AI service is busy. Please try again in a minute."
             ) from exc
         if status in (408, 504):
             raise GeminiTimeoutError(
                 "Gemini did not respond before the request timeout."
             ) from exc
         raise GeminiUnavailableError(
-            "Gemini answer generation is temporarily unavailable."
+            (
+                "The AI service is busy. Please try again in a minute."
+                if status == 503
+                else "Gemini answer generation is temporarily unavailable."
+            )
         ) from exc
     except httpx.TimeoutException as exc:
         raise GeminiTimeoutError(

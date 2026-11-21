@@ -123,9 +123,14 @@ export default function DocumentPanel({
                     <FileText size={19} />
                   </span>
 
-                  <span className="document-status">
+                  <span
+                    className={`document-status document-status--${doc.processing_state || "ready"}`}
+                    role="status"
+                  >
                     <i />
-                    {doc.status || "Status unavailable"}
+                    {doc.missing
+                      ? "missing – upload again"
+                      : doc.processing_label || doc.status || "Status unavailable"}
                   </span>
 
                   <button

@@ -1,15 +1,54 @@
-const configuredApiBaseUrl =
+const configuredApiBaseUrlRaw =
   import.meta.env.VITE_API_URL?.trim() ||
   import.meta.env.VITE_API_BASE_URL?.trim() ||
   "";
+const configuredApiBaseUrl = configuredApiBaseUrlRaw.replace(/\/+$/, "");
 const isProductionBuild = import.meta.env.MODE === "production";
 const isLoopbackUrl = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(
   configuredApiBaseUrl,
 );
-const apiConfigurationError =
-  isProductionBuild && (!configuredApiBaseUrl || isLoopbackUrl)
-    ? "Set VITE_API_URL to the deployed backend URL. Production builds cannot use a localhost API."
-    : null;
+function getApiConfigurationError() {
+  if (configuredApiBaseUrl && !/^https?:\/\//i.test(configuredApiBaseUrl)) {
+    return "VITE_API_URL must start with https://";
+  }
+  if (isProductionBuild && (!configuredApiBaseUrl || isLoopbackUrl)) {
+    return "Set VITE_API_URL to the deployed backend URL. Production builds cannot use a localhost API.";
+  }
+  if (!configuredApiBaseUrl) return null;
+
+  let url;
+  try {
+    url = new URL(configuredApiBaseUrl);
+  } catch {
+    return "VITE_API_URL must be an absolute HTTP or HTTPS backend URL.";
+  }
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    return "VITE_API_URL must be an HTTP or HTTPS backend URL without credentials, query, or fragment.";
+  }
+  if (
+    isProductionBuild &&
+    url.protocol !== "https:" &&
+    !isLoopbackUrl
+  ) {
+    return "VITE_API_URL must use HTTPS in production to avoid browser mixed-content blocking.";
+  }
+  if (
+    typeof window !== "undefined" &&
+    window.location.protocol === "https:" &&
+    url.protocol === "http:" &&
+    !isLoopbackUrl
+  ) {
+    return "This secure page cannot connect to an HTTP backend. Set VITE_API_URL to an HTTPS URL.";
+  }
+  return null;
+}
+const apiConfigurationError = getApiConfigurationError();
 const API_BASE_URL = (
   configuredApiBaseUrl ||
   (isProductionBuild ? "" : "http://127.0.0.1:8000")
@@ -19,8 +58,8 @@ const BACKEND_UNAVAILABLE_EVENT = "omnibrain:backend-unavailable";
 const BACKEND_REACHABLE_EVENT = "omnibrain:backend-reachable";
 
 const DEFAULT_REQUEST_TIMEOUT = 15_000;
-const UPLOAD_TIMEOUT = 120_000;
-const ANSWER_TIMEOUT = 660_000;
+const UPLOAD_TIMEOUT = 90_000;
+const ANSWER_TIMEOUT = 90_000;
 const MAX_UPLOAD_SIZE_BYTES = 20 * 1024 * 1024;
 const MAX_UPLOAD_FILES = 5;
 
@@ -32,8 +71,10 @@ function signalBackendUnavailable() {
   window.dispatchEvent(new CustomEvent(BACKEND_UNAVAILABLE_EVENT));
 }
 
-function signalBackendReachable() {
-  window.dispatchEvent(new CustomEvent(BACKEND_REACHABLE_EVENT));
+function signalBackendReachable(status = "online") {
+  window.dispatchEvent(
+    new CustomEvent(BACKEND_REACHABLE_EVENT, { detail: { status } }),
+  );
 }
 
 // --------------------------------------------------
@@ -110,6 +151,13 @@ async function request(
   }
 
   const controller = new AbortController();
+  const externalSignal = options.signal;
+  const abortFromCaller = () => controller.abort();
+  if (externalSignal?.aborted) {
+    controller.abort();
+  } else {
+    externalSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
 
   let timedOut = false;
 
@@ -121,15 +169,44 @@ async function request(
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
       ...options,
+      credentials: "omit",
       signal: controller.signal,
     });
 
-    signalBackendReachable();
+    signalBackendReachable(
+      response.status === 429 || response.status >= 500
+        ? "degraded"
+        : "online",
+    );
     const body = await parseResponse(response);
 
     if (!response.ok) {
+      if (response.status >= 500) {
+        console.error(
+          `[OmniBrain API] ${path} failed with HTTP ${response.status}.`,
+        );
+      }
+
+      const hasBackendDetail =
+        body &&
+        typeof body === "object" &&
+        (typeof body.detail === "string" ||
+          typeof body.message === "string" ||
+          Array.isArray(body.detail));
+      const message = hasBackendDetail
+        ? getErrorMessage(body, response.status)
+        : response.status === 429
+          ? "The AI service is busy. Please wait a moment before trying again."
+          : response.status === 503
+            ? "The service is temporarily unavailable. Please try again shortly."
+            : response.status === 504
+              ? "This request took too long to complete. Please try again shortly."
+              : response.status >= 500
+                ? "OmniBrain could not complete this request. Please try again shortly."
+                : getErrorMessage(body, response.status);
+
       throw new ApiError(
-        getErrorMessage(body, response.status),
+        message,
         response.status,
         "HTTP_ERROR",
       );
@@ -141,38 +218,45 @@ async function request(
       throw error;
     }
 
+    if (externalSignal?.aborted) {
+      throw new ApiError("Request cancelled.", null, "CANCELLED");
+    }
+
     if (
       timedOut ||
       (error instanceof DOMException && error.name === "AbortError")
     ) {
+      console.error(`[OmniBrain API] ${path} timed out.`, error);
+      signalBackendReachable(path === "/health" ? "offline" : "degraded");
       throw new ApiError(
         interruptionMessages.timeout ||
-          "The request timed out. Please try again.",
+          "This request is taking longer than expected. Try again shortly.",
         null,
         "TIMEOUT",
       );
     }
 
     if (error instanceof TypeError) {
+      console.error(`[OmniBrain API] Could not reach ${API_BASE_URL}.`, error);
       signalBackendUnavailable();
 
       throw new ApiError(
         interruptionMessages.network ||
-          `Could not reach OmniBrain at ${API_BASE_URL} from ` +
-            `${window.location.origin}. Check the backend URL and set ` +
-            "CORS_ORIGINS to this exact frontend origin (without a trailing slash).",
+          `OmniBrain is temporarily unreachable at ${API_BASE_URL || "the configured backend URL"}. The connection will be rechecked automatically.`,
         null,
         "NETWORK_ERROR",
       );
     }
 
+    console.error(`[OmniBrain API] ${path} request failed.`, error);
     throw new ApiError(
-      error instanceof Error ? error.message : "The request failed.",
+      "OmniBrain could not complete this request. Please try again shortly.",
       null,
       "REQUEST_ERROR",
     );
   } finally {
     window.clearTimeout(timeoutId);
+    externalSignal?.removeEventListener("abort", abortFromCaller);
   }
 }
 
@@ -184,8 +268,16 @@ export const api = {
   baseUrl: API_BASE_URL || "Not configured",
 
   // Check whether the FastAPI backend is responding.
-  checkHealth() {
-    return request("/health", {}, 10_000);
+  checkHealth(timeoutMs = 10_000) {
+    return request("/health", {}, timeoutMs);
+  },
+
+  getDocumentStatus(documentId) {
+    return request(
+      `/api/documents/${encodeURIComponent(documentId)}/status`,
+      {},
+      DEFAULT_REQUEST_TIMEOUT,
+    );
   },
 
   // Upload 1 to 5 PDFs in one request.
@@ -273,13 +365,9 @@ export const api = {
       UPLOAD_TIMEOUT,
       {
         timeout:
-          "The upload timed out. The backend may already have received " +
-          "or saved the PDFs, but the result could not be confirmed. " +
-          "Check the backend before retrying.",
+          "Upload confirmation is taking longer than expected. Check the document status before retrying.",
         network:
-          "The upload connection failed. The backend may already have " +
-          "received the PDFs, but the result could not be confirmed. " +
-          "Check the backend before retrying.",
+          "Could not connect to the backend. The server may be waking up. Wait a minute and try again.",
       },
     );
   },
@@ -300,7 +388,7 @@ export const api = {
   },
 
   // Ask one grounded question across the selected PDFs.
-  async answerQuestion(documentIds, question) {
+  async answerQuestion(documentIds, question, signal) {
     const ids = Array.isArray(documentIds) ? documentIds : [documentIds];
 
     if (
@@ -326,15 +414,14 @@ export const api = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: text, document_ids: ids }),
+        signal,
       },
       ANSWER_TIMEOUT,
       {
         timeout:
-          "Answer generation took too long. Check the backend readiness " +
-          "endpoint and logs before submitting the question again.",
+          "This answer is taking longer than expected. Please try again shortly.",
         network:
-          "The connection to OmniBrain was interrupted. Check the " +
-          "backend status before retrying.",
+          "Could not connect to the backend. The server may be waking up. Wait a minute and try again.",
       },
     );
   },

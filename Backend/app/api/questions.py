@@ -35,6 +35,10 @@ router = APIRouter(
     tags=["Questions"],
 )
 logger = logging.getLogger(__name__)
+MISSING_DOCUMENT_MESSAGE = (
+    "This document is no longer available on the server. "
+    "Please upload it again."
+)
 
 
 def log_redacted_traceback(context: str, exc: Exception) -> None:
@@ -82,9 +86,9 @@ def answer_question(document_id: UUID, request: QuestionRequest):
     try:
         return answer_document_question(str(document_id), question)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=MISSING_DOCUMENT_MESSAGE) from exc
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=MISSING_DOCUMENT_MESSAGE) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except GeminiAuthenticationError as exc:
@@ -209,9 +213,9 @@ def answer_selected_documents(request: MultiDocumentQuestionRequest):
             document_ids=[str(document_id) for document_id in request.document_ids],
         )
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=MISSING_DOCUMENT_MESSAGE) from exc
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=MISSING_DOCUMENT_MESSAGE) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except GeminiAuthenticationError as exc:

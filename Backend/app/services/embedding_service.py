@@ -3,8 +3,9 @@ import json
 import logging
 import math
 import sys
-from threading import Lock
+import time
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import httpx
@@ -38,9 +39,6 @@ LOCAL_EMBEDDING_MODEL_LOCK = Lock()
 # Embedding models support roughly 512 input tokens; keep a margin for the
 # approximate tokenizer used by the chunker.
 SAFE_TOKEN_LIMIT = 480
-
-BACKEND_DIR = Path(__file__).resolve().parents[2]
-PROCESSED_DIR = PROCESSED_DATA_DIR
 
 # Metadata fields that should survive embedding and indexing.
 METADATA_FIELDS = (
@@ -145,14 +143,23 @@ def embed_texts(texts: list[str], task_type: str) -> list[list[float]]:
 
     try:
         if EMBEDDING_PROVIDER == "gemini":
-            response = get_gemini_client().models.embed_content(
-                model=MODEL_NAME,
-                contents=prepared_texts,
-                config=types.EmbedContentConfig(
-                    task_type=task_type,
-                    output_dimensionality=VECTOR_SIZE,
-                ),
-            )
+            for attempt in range(3):
+                try:
+                    response = get_gemini_client().models.embed_content(
+                        model=MODEL_NAME,
+                        contents=prepared_texts,
+                        config=types.EmbedContentConfig(
+                            task_type=task_type,
+                            output_dimensionality=VECTOR_SIZE,
+                        ),
+                    )
+                    break
+                except APIError as exc:
+                    status = getattr(exc, "code", None)
+                    if status in (429, 503) and attempt < 2:
+                        time.sleep((2, 4)[attempt])
+                        continue
+                    raise
             vectors = [
                 embedding.values
                 for embedding in (response.embeddings or [])
@@ -263,7 +270,7 @@ def load_chunks(document_id: str) -> tuple[dict, list]:
     ):
         raise ValueError("Invalid document_id.")
 
-    input_path = PROCESSED_DIR / f"{document_id}_chunks.json"
+    input_path = PROCESSED_DATA_DIR / f"{document_id}_chunks.json"
 
     if not input_path.is_file():
         raise FileNotFoundError(
@@ -418,18 +425,18 @@ def generate_embeddings(
 
     # Save the result for debugging and vector indexing.
     if save_output:
-        PROCESSED_DIR.mkdir(
+        PROCESSED_DATA_DIR.mkdir(
             parents=True,
             exist_ok=True,
         )
 
         output_path = (
-            PROCESSED_DIR
+            PROCESSED_DATA_DIR
             / f"{document_id}_embeddings.json"
         )
 
         temporary_path = (
-            PROCESSED_DIR
+            PROCESSED_DATA_DIR
             / f".{document_id}_embeddings.json.tmp"
         )
 
@@ -461,7 +468,7 @@ def _load_cached_vectors(
     chunks: list[dict],
 ) -> list[list[float]] | None:
     """Reuse a cache only when it exactly matches the current model and text."""
-    cache_path = PROCESSED_DIR / f"{document_id}_embeddings.json"
+    cache_path = PROCESSED_DATA_DIR / f"{document_id}_embeddings.json"
     if not cache_path.is_file():
         return None
 

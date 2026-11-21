@@ -10,4 +10,3 @@ httpx==0.28.1
 pinecone==10.1.0
 python-dotenv==1.2.4
 google-genai==2.34.0
-sentence-transformers==6.2.0

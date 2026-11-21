@@ -1,6 +1,7 @@
 import logging
 import re
 import time
+from collections.abc import Callable
 from threading import Lock
 from typing import Any
 
@@ -37,6 +38,27 @@ logger = logging.getLogger(__name__)
 _document_locks: dict[str, Lock] = {}
 _metadata_locks: dict[str, Lock] = {}
 _document_locks_guard = Lock()
+
+
+def _run_document_stage(
+    document_id: str,
+    stage: str,
+    operation: Callable[[], Any],
+) -> Any:
+    update_processing_stage(document_id, stage, "running")
+    try:
+        result = operation()
+    except Exception as exc:
+        update_processing_stage(
+            document_id,
+            stage,
+            "failed",
+            error=type(exc).__name__,
+        )
+        raise
+    update_processing_stage(document_id, stage, "complete")
+    return result
+
 
 _FILENAME_QUESTION = (
     "filename",
@@ -238,6 +260,12 @@ def ensure_document_indexed(document_id: str) -> None:
     pdf_path = RAW_DATA_DIR / f"{document_id}.pdf"
 
     if not pdf_path.is_file():
+        update_processing_stage(
+            document_id,
+            "indexing",
+            "failed",
+            error="FileNotFoundError",
+        )
         raise FileNotFoundError(
             f"Uploaded PDF not found for document {document_id}."
         )
@@ -245,30 +273,40 @@ def ensure_document_indexed(document_id: str) -> None:
     with _get_document_lock(document_id):
         info = load_document_info(document_id) or {}
         filename = info.get("filename")
-        client = get_pinecone_client()
+        client = None
 
         try:
+            pinecone_client = get_pinecone_client()
+            client = pinecone_client
+
             # Already indexed? Then nothing to do.
             if is_document_indexed(client, document_id):
-                update_processing_stage(document_id, "indexing", "complete")
+                for stage in ("extraction", "chunking", "embedding", "indexing"):
+                    update_processing_stage(document_id, stage, "complete")
                 return
 
-            # Extract text and page information from the PDF.
-            extracted = extract_pdf_text(
-                pdf_path,
-                document_id=document_id,
+            extracted = _run_document_stage(
+                document_id,
+                "extraction",
+                lambda: extract_pdf_text(
+                    pdf_path,
+                    document_id=document_id,
+                ),
             )
 
-            # Split extracted content into searchable chunks.
-            chunk_extracted_json(
-                extracted["output_json"],
-                filename=filename,
+            _run_document_stage(
+                document_id,
+                "chunking",
+                lambda: chunk_extracted_json(
+                    extracted["output_json"],
+                    filename=filename,
+                ),
             )
-
-            # Generate vector embeddings for the chunks.
-            generate_embeddings(document_id)
-
-            # Load embeddings and corresponding chunk data.
+            _run_document_stage(
+                document_id,
+                "embedding",
+                lambda: generate_embeddings(document_id),
+            )
             data, chunks, vector_size = load_embeddings(
                 document_id
             )
@@ -278,21 +316,44 @@ def ensure_document_indexed(document_id: str) -> None:
                     "Document indexing produced no embeddings or chunks."
                 )
 
-            # Create the index if needed and store the vectors.
-            ensure_index(client, vector_size)
+            def index_document() -> None:
+                ensure_index(pinecone_client, vector_size)
+                store_embeddings(
+                    client=pinecone_client,
+                    document_id=document_id,
+                    data=data,
+                    chunks=chunks,
+                    vector_size=vector_size,
+                    filename=filename,
+                )
 
-            store_embeddings(
-                client=client,
-                document_id=document_id,
-                data=data,
-                chunks=chunks,
-                vector_size=vector_size,
-                filename=filename,
+            _run_document_stage(
+                document_id,
+                "indexing",
+                index_document,
             )
-            update_processing_stage(document_id, "indexing", "complete")
+        except Exception as exc:
+            stages = (load_document_info(document_id) or {}).get(
+                "processing_status",
+                {},
+            )
+            if not isinstance(stages, dict):
+                stages = {}
+            if not any(
+                isinstance(stage_info, dict)
+                and stage_info.get("status") == "failed"
+                for stage_info in stages.values()
+            ):
+                update_processing_stage(
+                    document_id,
+                    "indexing",
+                    "failed",
+                    error=type(exc).__name__,
+                )
+            raise
 
         finally:
-            if hasattr(client, "close"):
+            if client is not None and hasattr(client, "close"):
                 client.close()
 
 

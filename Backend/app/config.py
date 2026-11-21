@@ -12,11 +12,17 @@ load_dotenv(BACKEND_ROOT / ".env")
 # 1. Project directories
 # --------------------------------------------------
 
+OMNIBRAIN_DATA_DIR = os.getenv("OMNIBRAIN_DATA_DIR")
+if OMNIBRAIN_DATA_DIR:
+    DATA_ROOT = Path(OMNIBRAIN_DATA_DIR).expanduser().resolve()
+else:
+    DATA_ROOT = BACKEND_ROOT / "Data"
+
 # Directory containing original uploaded PDFs.
-RAW_DATA_DIR = BACKEND_ROOT / "Data" / "raw"
+RAW_DATA_DIR = DATA_ROOT / "raw"
 
 # Directory containing processed extraction, chunking, and embedding files.
-PROCESSED_DATA_DIR = BACKEND_ROOT / "Data" / "processed"
+PROCESSED_DATA_DIR = DATA_ROOT / "processed"
 
 
 # --------------------------------------------------
@@ -55,16 +61,16 @@ if not 1 <= MAX_FILES_PER_UPLOAD <= 5:
 # --------------------------------------------------
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "omnibrain-documents")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "omnibrain-documents-gemini")
 PINECONE_CLOUD = os.getenv("PINECONE_CLOUD", "aws")
 PINECONE_REGION = os.getenv("PINECONE_REGION", "us-east-1")
 PINECONE_TIMEOUT_SECONDS = 20.0
 PINECONE_MAX_RETRIES = 2
 
-# Sentence Transformers is the default local embedding provider. Gemini and
+# Gemini is the default embedding provider. Local Sentence Transformers and
 # Ollama remain optional alternatives when explicitly configured.
 EMBEDDING_PROVIDER = (
-    os.getenv("EMBEDDING_PROVIDER") or "local"
+    os.getenv("EMBEDDING_PROVIDER") or "gemini"
 ).strip().lower()
 if EMBEDDING_PROVIDER not in {"local", "gemini", "ollama"}:
     raise ValueError(
@@ -105,6 +111,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = (
     os.getenv("GEMINI_MODEL", "").strip() or "gemini-3.5-flash"
 ).strip()
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
 
 
 # --------------------------------------------------

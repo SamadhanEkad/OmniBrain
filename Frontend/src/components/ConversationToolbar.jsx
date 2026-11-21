@@ -80,6 +80,14 @@ export default function ConversationToolbar({
     action();
   }
 
+  const healthLabels = {
+    online: "Online",
+    degraded: "Degraded",
+    checking: "Connecting",
+    offline: "Offline",
+  };
+  const healthLabel = healthLabels[backendStatus] || "Offline";
+
   return (
     <header className="workspace-header">
       <div className="conversation-title">
@@ -87,9 +95,9 @@ export default function ConversationToolbar({
         <strong>{conversation?.document ? "Document chat" : "New conversation"}</strong>
       </div>
       <div className="header-actions">
-        <button className={`header-health header-health--${backendStatus}`} type="button" onClick={onRefreshHealth} title="Check backend connection again">
+        <button className={`header-health header-health--${backendStatus}`} type="button" onClick={onRefreshHealth} title="Check backend connection again" aria-label={healthLabel}>
           <i />
-          {backendStatus === "online" ? "Connected" : backendStatus === "checking" ? "Connecting" : "Offline · recheck"}
+          {healthLabel}
         </button>
         <span className="header-divider" />
         <button className="toolbar-icon" type="button" onClick={onShare} aria-label="Share conversation" title="Share conversation">

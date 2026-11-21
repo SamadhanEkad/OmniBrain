@@ -88,8 +88,8 @@ The equation is $E=mc^2$.
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Connected" })).toBeTruthy());
-    expect(screen.getAllByRole("button", { name: "Connected" })).toHaveLength(1);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Online" })).toBeTruthy());
+    expect(screen.getAllByRole("button", { name: "Online" })).toHaveLength(1);
     await uploadPdf(user);
     expect(await screen.findAllByText("notes.pdf")).toHaveLength(2);
     await ask(user, "What is the key finding?");
@@ -125,19 +125,31 @@ The equation is $E=mc^2$.
     );
   });
 
-  it("shows the health-check error when the backend cannot be reached", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockRejectedValue(new TypeError("Failed to fetch")),
-    );
+  it("retries a sleeping backend twice and then shows online", async () => {
+    let healthAttempts = 0;
+    const fetchMock = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/health") {
+        healthAttempts += 1;
+        if (healthAttempts <= 2) {
+          throw new TypeError("Failed to fetch");
+        }
+        return jsonResponse({ status: "healthy" });
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
 
-    expect(await screen.findByRole("button", { name: "Offline · recheck" })).toBeTruthy();
-    const healthError = await screen.findByRole("alert");
-    expect(healthError.textContent).toContain("Could not reach OmniBrain at");
-    expect(healthError.textContent).toContain(window.location.origin);
-    expect(healthError.textContent).toContain("CORS_ORIGINS");
+    expect(
+      await screen.findByText(
+        "Waking up the server… this can take up to a minute on the free plan",
+      ),
+    ).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Online" })).toBeTruthy();
+    expect(healthAttempts).toBeGreaterThanOrEqual(3);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("keeps the backend reachable when an API route returns a server error", async () => {
@@ -162,11 +174,35 @@ The equation is $E=mc^2$.
       });
 
       expect(reachable).toHaveBeenCalledOnce();
+      expect(reachable.mock.calls[0][0].detail.status).toBe("degraded");
       expect(unavailable).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener("omnibrain:backend-unavailable", unavailable);
       window.removeEventListener("omnibrain:backend-reachable", reachable);
     }
+  });
+
+  it("shows a backend answer failure in the chat and re-enables the composer", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/health") return jsonResponse({ status: "healthy" });
+      if (url.pathname === "/api/documents/upload") {
+        return jsonResponse(uploadResult("doc-error", "notes.pdf"));
+      }
+      if (url.pathname === "/api/documents/answer") {
+        return jsonResponse({ detail: "The AI service is busy." }, 503);
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await uploadPdf(user);
+    await ask(user, "Summarize this document");
+
+    expect(await screen.findByText("The AI service is busy.")).toBeTruthy();
+    expect(screen.getByLabelText("Ask about your documents").disabled).toBe(false);
   });
 
   it("sends one combined question request for five uploaded PDFs", async () => {
@@ -309,6 +345,178 @@ The equation is $E=mc^2$.
 
     expect(await screen.findByText("I couldn’t complete that answer.")).toBeTruthy();
     expect(screen.getByText("No relevant passages were found in this document.")).toBeTruthy();
+  });
+
+  it("shows a preparing status while uploaded documents are still indexing", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/health") return jsonResponse({ status: "healthy" });
+      if (url.pathname === "/api/documents/upload") {
+        const result = uploadResult("doc-processing", "processing.pdf");
+        result.uploaded[0].processing_state = "processing";
+        result.uploaded[0].processing_status = {
+          extraction: { status: "running" },
+        };
+        return jsonResponse(result);
+      }
+      if (url.pathname.endsWith("/status")) {
+        return jsonResponse({
+          processing_state: "processing",
+          processing_status: { extraction: { status: "running" } },
+        });
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await uploadPdf(user, "processing.pdf");
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Preparing your document…",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Ask about your documents").disabled).toBe(
+      true,
+    );
+  });
+
+  it("shows backend service details and re-enables questions after an answer failure", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/health") return jsonResponse({ status: "healthy" });
+      if (url.pathname === "/api/documents/upload") {
+        return jsonResponse(uploadResult("doc-busy", "busy.pdf"));
+      }
+      if (url.pathname === "/api/documents/answer") {
+        return jsonResponse(
+          { detail: "The AI service is busy. Please try again in a minute." },
+          503,
+        );
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await uploadPdf(user, "busy.pdf");
+    await ask(user, "What does this PDF say?");
+
+    expect(
+      await screen.findByText(
+        "The AI service is busy. Please try again in a minute.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Ask about your documents").disabled).toBe(
+      false,
+    );
+    expect(screen.getByRole("button", { name: "Send question" }).disabled).toBe(
+      true,
+    );
+  });
+
+  it("keeps answered conversation history visible after deleting its PDF and refreshing", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input, options) => {
+      const url = new URL(input);
+      if (url.pathname === "/health") return jsonResponse({ status: "healthy" });
+      if (url.pathname === "/api/documents/upload") {
+        return jsonResponse(uploadResult("doc-history", "notes.pdf"));
+      }
+      if (url.pathname === "/api/documents/answer") {
+        return jsonResponse({
+          answer: "This answer remains in local history.",
+          sources: [
+            {
+              document_id: "doc-history",
+              filename: "notes.pdf",
+              page_number: 1,
+              text: "The preserved answer source.",
+            },
+          ],
+        });
+      }
+      if (
+        url.pathname === "/api/documents/doc-history" &&
+        options.method === "DELETE"
+      ) {
+        return jsonResponse({ document_id: "doc-history", deleted: true });
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const app = render(<App />);
+    await uploadPdf(user, "notes.pdf");
+    await ask(user, "What should remain in history?");
+    expect(await screen.findByText("This answer remains in local history.")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Documents" }));
+    await user.click(screen.getByRole("button", { name: "Delete notes.pdf" }));
+    await user.click(screen.getByRole("button", { name: "Delete PDF" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/api/documents/doc-history"),
+        expect.objectContaining({ method: "DELETE" }),
+      );
+    });
+
+    app.unmount();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "History" }));
+    await user.click(
+      screen.getAllByRole("button", {
+        name: /What should remain in history/,
+      })[0],
+    );
+
+    expect(
+      await screen.findByText("This answer remains in local history."),
+    ).toBeTruthy();
+    expect(screen.getByText("notes.pdf — Page 1")).toBeTruthy();
+  });
+
+  it("marks a document missing after the backend says it is unavailable", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/health") return jsonResponse({ status: "healthy" });
+      if (url.pathname === "/api/documents/upload") {
+        return jsonResponse(uploadResult("doc-missing", "missing.pdf"));
+      }
+      if (url.pathname === "/api/documents/answer") {
+        return jsonResponse(
+          {
+            detail:
+              "This document is no longer available on the server. Please upload it again.",
+          },
+          404,
+        );
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await uploadPdf(user, "missing.pdf");
+    await ask(user, "What is in this PDF?");
+
+    expect(
+      await screen.findByText(
+        "This document is no longer available on the server. Please upload it again.",
+      ),
+    ).toBeTruthy();
+    const saved = JSON.parse(
+      localStorage.getItem("omnibrain.workspace.v1"),
+    );
+    expect(saved.conversations[0].documents[0].missing).toBe(true);
+    expect(saved.conversations[0].documents[0].processing_label).toBe(
+      "missing – upload again",
+    );
+    expect(saved.conversations[0].selectedIds).not.toContain("doc-missing");
   });
 
   it("hides answers whose source metadata identifies a different document", async () => {

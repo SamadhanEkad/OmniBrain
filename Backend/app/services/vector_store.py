@@ -10,6 +10,7 @@ from pinecone import Pinecone, RetryConfig, ServerlessSpec
 
 from app.config import (
     EMBEDDING_FINGERPRINT,
+    PROCESSED_DATA_DIR,
     PINECONE_API_KEY,
     PINECONE_CLOUD,
     PINECONE_INDEX_NAME,
@@ -24,9 +25,6 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------
 # 1. Project paths and Pinecone configuration
 # --------------------------------------------------
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PROCESSED_DIR = PROJECT_ROOT / "Data" / "processed"
 
 INDEX_NAME = PINECONE_INDEX_NAME
 COLLECTION_NAME = INDEX_NAME
@@ -234,7 +232,7 @@ def load_embeddings(document_id: str):
     _validate_document_id(document_id)
 
     file_path = (
-        PROCESSED_DIR / f"{document_id}_embeddings.json"
+        PROCESSED_DATA_DIR / f"{document_id}_embeddings.json"
     )
 
     if not file_path.is_file():
@@ -431,7 +429,7 @@ def store_embeddings(
 def _load_chunk_ids(document_id: str) -> list[str]:
     """Read the chunk IDs of a document from its processed files."""
     for suffix in ("_chunks.json", "_embeddings.json"):
-        path = PROCESSED_DIR / f"{document_id}{suffix}"
+        path = PROCESSED_DATA_DIR / f"{document_id}{suffix}"
         if not path.is_file():
             continue
 

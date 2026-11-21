@@ -544,6 +544,10 @@ kbd {
   background: var(--red);
 }
 
+.header-health--degraded i {
+  background: var(--amber);
+}
+
 .header-divider {
   width: 1px;
   height: 18px;
@@ -1746,6 +1750,24 @@ kbd {
 
 .document-status i {
   background: var(--green);
+}
+
+.document-status--queued,
+.document-status--processing {
+  color: var(--amber);
+}
+
+.document-status--queued i,
+.document-status--processing i {
+  background: var(--amber);
+}
+
+.document-status--failed {
+  color: var(--red);
+}
+
+.document-status--failed i {
+  background: var(--red);
 }
 
 .documents-empty {
